@@ -10,8 +10,8 @@
 
 body {
   margin: 0;
-  min-width: 760px;
-  min-height: 620px;
+  min-width: 560px;
+  min-height: 420px;
   overflow: hidden;
   background: #f5f7f5;
 }
@@ -28,7 +28,7 @@ button {
 
 .shell {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(230px, 1fr);
+  grid-template-columns: minmax(0, 3fr) minmax(190px, 1fr);
   width: 100vw;
   height: 100vh;
   border: 1px solid #cfd8d2;
@@ -48,8 +48,8 @@ button {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 36px 36px 36px;
-  gap: 8px;
+  grid-template-columns: minmax(150px, 1fr) 34px 34px 34px;
+  gap: 7px;
   align-items: center;
   padding: 12px;
   background: #eef3ef;
@@ -198,7 +198,7 @@ button {
   display: none;
   position: fixed;
   z-index: 10;
-  right: 290px;
+  right: 230px;
   top: 72px;
   max-width: 46vw;
   max-height: 70vh;
@@ -215,7 +215,7 @@ button {
   position: relative;
   min-width: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 10px;
   background: #f0f4f1;
 }
 
@@ -292,6 +292,79 @@ button {
 
 .quickRow {
   margin-bottom: 10px;
+}
+
+.settingsSection {
+  padding-top: 0;
+}
+
+.fieldLabel {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+  color: #52615a;
+  font-size: 12px;
+}
+
+.fieldLabel input,
+.fieldLabel select {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid #c8d2cc;
+  border-radius: 7px;
+  padding: 0 8px;
+  color: #1e2528;
+  background: #ffffff;
+}
+
+.toggleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin-bottom: 5px;
+  color: #33423b;
+  font-size: 12px;
+}
+
+.toggleRow span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settingsActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.settingsActions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 31px;
+  border: 1px solid #c8d2cc;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.settingsActions button:hover {
+  background: #e3eee7;
+}
+
+.settingsStatus {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid #d8ded8;
+  border-radius: 7px;
+  color: #44534c;
+  background: #ffffff;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 840px) {

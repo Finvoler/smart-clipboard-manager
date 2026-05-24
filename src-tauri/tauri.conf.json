@@ -14,14 +14,16 @@
       {
         "label": "main",
         "title": "Smart Clipboard",
-        "width": 920,
-        "height": 700,
+        "width": 760,
+        "height": 540,
+        "minWidth": 560,
+        "minHeight": 420,
         "visible": false,
         "resizable": true,
-        "decorations": false,
+        "decorations": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "center": true
+        "center": false
       }
     ],
     "security": {

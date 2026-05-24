@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Archive, Bot, ChevronLeft, ChevronRight, Clock, Edit3, FolderPlus, Image as ImageIcon, Pin, Search, Star, Trash2, X } from 'lucide-react';
+import { Archive, Bot, ChevronLeft, ChevronRight, Clock, Edit3, FolderPlus, Image as ImageIcon, Pin, Power, Save, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import { call, fileSrc, onNewItem, onQuickPoolExtracted, type ClipboardItem, type Folder, type QuickItem } from './tauriClient';
+import { call, fileSrc, onNewItem, onQuickPoolExtracted, type AppSettings, type ClipboardItem, type Folder, type QuickItem } from './tauriClient';
 
 const DEFAULT_LIMIT = 120;
 
@@ -13,22 +13,26 @@ export function App() {
   const [items, setItems] = useState<ClipboardItem[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [quickItems, setQuickItems] = useState<QuickItem[]>([]);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [status, setStatus] = useState('');
+  const [settingsStatus, setSettingsStatus] = useState('');
 
   async function refresh() {
-    const [history, folderList, pool] = await Promise.all([
+    const [history, folderList, pool, appSettings] = await Promise.all([
       call<ClipboardItem[]>('get_history', { limit: DEFAULT_LIMIT, offset: 0 }),
       call<Folder[]>('get_folders'),
       call<QuickItem[]>('get_quick_pool'),
+      call<AppSettings>('get_app_settings'),
     ]);
     setItems(history);
     setFolders(folderList);
     setQuickItems(pool);
+    setSettings(appSettings);
     setSelectedId((current) => current ?? history[0]?.id ?? null);
   }
 
@@ -89,6 +93,28 @@ export function App() {
       setItems((current) => current.filter((item) => ids.includes(item.id)));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function updateSettings(patch: Partial<AppSettings>) {
+    setSettings((current) => current ? { ...current, ...patch } : current);
+  }
+
+  async function saveSettings(nextSettings = settings) {
+    if (!nextSettings) return null;
+    const saved = await call<AppSettings>('save_app_settings', { settings: nextSettings });
+    setSettings(saved);
+    setSettingsStatus('Saved');
+    return saved;
+  }
+
+  async function testAiConnection() {
+    try {
+      await saveSettings();
+      const result = await call<string>('test_ai_connection');
+      setSettingsStatus(result);
+    } catch (error) {
+      setSettingsStatus(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -236,6 +262,16 @@ export function App() {
           {sidebarCollapsed ? <ChevronLeft size={17} /> : <ChevronRight size={17} />}
         </button>
 
+        {settings ? (
+          <SettingsSection
+            settings={settings}
+            status={settingsStatus}
+            onChange={updateSettings}
+            onSave={() => void saveSettings()}
+            onTest={() => void testAiConnection()}
+          />
+        ) : null}
+
         <section className="sideSection">
           <h2><Star size={15} /> Starred</h2>
           {items.filter((item) => item.isStar).slice(0, 8).map((item) => (
@@ -261,6 +297,70 @@ export function App() {
         </section>
       </aside>
     </main>
+  );
+}
+
+function SettingsSection({ settings, status, onChange, onSave, onTest }: { settings: AppSettings; status: string; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; }) {
+  return (
+    <section className="sideSection settingsSection">
+      <h2><Settings size={15} /> API Settings</h2>
+
+      <label className="toggleRow">
+        <input type="checkbox" checked={settings.appEnabled} onChange={(event) => onChange({ appEnabled: event.target.checked })} />
+        <span><Power size={14} /> Enable app</span>
+      </label>
+      <label className="toggleRow">
+        <input type="checkbox" checked={settings.captureEnabled} onChange={(event) => onChange({ captureEnabled: event.target.checked })} />
+        <span>Capture clipboard</span>
+      </label>
+      <label className="toggleRow">
+        <input type="checkbox" checked={settings.interceptWinV} onChange={(event) => onChange({ interceptWinV: event.target.checked })} />
+        <span>Use Smart Win+V</span>
+      </label>
+      <label className="toggleRow">
+        <input type="checkbox" checked={settings.runAtStartup} onChange={(event) => onChange({ runAtStartup: event.target.checked })} />
+        <span>Start with Windows</span>
+      </label>
+      <label className="toggleRow">
+        <input type="checkbox" checked={settings.hideConsoleWindow} onChange={(event) => onChange({ hideConsoleWindow: event.target.checked })} />
+        <span>Hide console window</span>
+      </label>
+
+      <label className="fieldLabel">
+        Protocol
+        <select value={settings.aiProtocol} onChange={(event) => onChange({ aiProtocol: event.target.value as AppSettings['aiProtocol'] })}>
+          <option value="openai">OpenAI compatible</option>
+          <option value="anthropic">Anthropic compatible</option>
+        </select>
+      </label>
+
+      <label className="fieldLabel">
+        OpenAI base URL
+        <input value={settings.openaiBaseUrl} onChange={(event) => onChange({ openaiBaseUrl: event.target.value })} />
+      </label>
+      <label className="fieldLabel">
+        Anthropic base URL
+        <input value={settings.anthropicBaseUrl} onChange={(event) => onChange({ anthropicBaseUrl: event.target.value })} />
+      </label>
+      <label className="fieldLabel">
+        API key
+        <input type="password" value={settings.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} />
+      </label>
+      <label className="fieldLabel">
+        Search / archive model
+        <input value={settings.searchModel} onChange={(event) => onChange({ searchModel: event.target.value })} />
+      </label>
+      <label className="fieldLabel">
+        OCR model
+        <input value={settings.ocrModel} onChange={(event) => onChange({ ocrModel: event.target.value })} />
+      </label>
+
+      <div className="settingsActions">
+        <button onClick={onSave}><Save size={14} /> Save</button>
+        <button onClick={onTest}><TestTube2 size={14} /> Test</button>
+      </div>
+      {status ? <div className="settingsStatus">{status}</div> : null}
+    </section>
   );
 }
 

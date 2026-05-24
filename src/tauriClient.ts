@@ -1,6 +1,6 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { ClipboardItem, Folder, QuickItem } from './types';
+import type { AppSettings, ClipboardItem, Folder, QuickItem } from './types';
 
 const hasTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -16,6 +16,20 @@ const demoItems: ClipboardItem[] = [
   },
 ];
 
+const demoSettings: AppSettings = {
+  appEnabled: true,
+  captureEnabled: true,
+  interceptWinV: true,
+  runAtStartup: false,
+  hideConsoleWindow: true,
+  aiProtocol: 'openai',
+  openaiBaseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+  anthropicBaseUrl: 'https://token-plan-cn.xiaomimimo.com/anthropic',
+  apiKey: '',
+  searchModel: 'mimo2.5pro',
+  ocrModel: 'mimo2.5pro',
+};
+
 export function fileSrc(path?: string | null): string | undefined {
   if (!path) return undefined;
   return hasTauri ? convertFileSrc(path) : path;
@@ -27,6 +41,9 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (command === 'get_history') return demoItems as T;
   if (command === 'get_folders') return [] as T;
   if (command === 'get_quick_pool') return [] as T;
+  if (command === 'get_app_settings') return demoSettings as T;
+  if (command === 'save_app_settings') return { ...demoSettings, ...(args?.settings as Partial<AppSettings> | undefined) } as T;
+  if (command === 'test_ai_connection') return 'Demo runtime: Tauri is not available' as T;
   if (command === 'search_local') return demoItems as T;
   if (command === 'hide_window') return undefined as T;
   if (command === 'execute_paste') return undefined as T;
@@ -45,4 +62,4 @@ export async function onQuickPoolExtracted(callback: (item: QuickItem) => void):
   return unlisten;
 }
 
-export type { ClipboardItem, Folder, QuickItem };
+export type { AppSettings, ClipboardItem, Folder, QuickItem };

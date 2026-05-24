@@ -31,3 +31,17 @@ export interface QuickItem {
   expiresAt?: number | null;
   isPinned: boolean;
 }
+
+export interface AppSettings {
+  appEnabled: boolean;
+  captureEnabled: boolean;
+  interceptWinV: boolean;
+  runAtStartup: boolean;
+  hideConsoleWindow: boolean;
+  aiProtocol: 'openai' | 'anthropic';
+  openaiBaseUrl: string;
+  anthropicBaseUrl: string;
+  apiKey: string;
+  searchModel: string;
+  ocrModel: string;
+}
