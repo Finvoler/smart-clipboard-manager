@@ -1,4 +1,5 @@
 use std::{
+  ptr::null_mut,
   sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
   thread,
   time::Duration,
@@ -12,7 +13,7 @@ use windows::{
     System::{DataExchange::AddClipboardFormatListener, LibraryLoader::GetModuleHandleW},
     UI::{
       Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_RWIN},
-      WindowsAndMessaging::{CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, SW_HIDE, SW_SHOWNORMAL, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW},
+      WindowsAndMessaging::{CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, SW_SHOWNORMAL, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW},
     },
   },
 };
@@ -61,8 +62,8 @@ pub fn paste_text_and_hide(app: &AppHandle, text: &str, last_foreground_window: 
 
   if let Some(hwnd) = *last_foreground_window.lock().map_err(|_| "foreground window lock poisoned".to_string())? {
     unsafe {
-      let target = HWND(hwnd);
-      ShowWindow(target, SW_SHOWNORMAL);
+      let target = HWND(hwnd as *mut _);
+      let _ = ShowWindow(target, SW_SHOWNORMAL);
       let _ = SetForegroundWindow(target);
     }
   }
@@ -84,15 +85,17 @@ fn start_clipboard_message_window() {
       ..Default::default()
     };
     RegisterClassW(&window_class);
-    let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), class_name, w!(""), WINDOW_STYLE(0), 0, 0, 0, 0, HWND_MESSAGE, None, HINSTANCE(module.0), None);
-    if hwnd.0 == 0 {
+    let Ok(hwnd) = CreateWindowExW(WINDOW_EX_STYLE(0), class_name, w!(""), WINDOW_STYLE(0), 0, 0, 0, 0, HWND_MESSAGE, None, HINSTANCE(module.0), None) else {
+      return;
+    };
+    if hwnd.0.is_null() {
       return;
     }
     let _ = AddClipboardFormatListener(hwnd);
 
     let mut message = MSG::default();
-    while GetMessageW(&mut message, HWND(0), 0, 0).into() {
-      TranslateMessage(&message);
+    while GetMessageW(&mut message, HWND(null_mut()), 0, 0).into() {
+      let _ = TranslateMessage(&message);
       DispatchMessageW(&message);
     }
   }
@@ -150,14 +153,16 @@ fn emit_new_item(app: &AppHandle, item: ClipboardItem) {
 
 fn start_keyboard_hook() {
   unsafe {
-    let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), HINSTANCE(0), 0);
-    if hook.0 == 0 {
+    let Ok(hook) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), HINSTANCE(null_mut()), 0) else {
+      return;
+    };
+    if hook.0.is_null() {
       return;
     }
 
     let mut message = MSG::default();
-    while GetMessageW(&mut message, HWND(0), 0, 0).into() {
-      TranslateMessage(&message);
+    while GetMessageW(&mut message, HWND(null_mut()), 0, 0).into() {
+      let _ = TranslateMessage(&message);
       DispatchMessageW(&message);
     }
   }
@@ -165,11 +170,11 @@ fn start_keyboard_hook() {
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
   if code < 0 {
-    return CallNextHookEx(HHOOK(0), code, wparam, lparam);
+    return CallNextHookEx(HHOOK(null_mut()), code, wparam, lparam);
   }
 
   let Some(runtime) = HOTKEY_RUNTIME.get() else {
-    return CallNextHookEx(HHOOK(0), code, wparam, lparam);
+    return CallNextHookEx(HHOOK(null_mut()), code, wparam, lparam);
   };
 
   let keyboard = *(lparam.0 as *const KBDLLHOOKSTRUCT);
@@ -187,15 +192,15 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     return LRESULT(1);
   }
 
-  CallNextHookEx(HHOOK(0), code, wparam, lparam)
+  CallNextHookEx(HHOOK(null_mut()), code, wparam, lparam)
 }
 
 fn show_main_window(runtime: &HotkeyRuntime) {
   unsafe {
     let foreground = GetForegroundWindow();
-    if foreground.0 != 0 {
+    if !foreground.0.is_null() {
       if let Ok(mut last) = runtime.last_foreground_window.lock() {
-        *last = Some(foreground.0);
+        *last = Some(foreground.0 as isize);
       }
     }
   }
