@@ -32,6 +32,7 @@ const expectedCommands = [
   'get_app_settings',
   'save_app_settings',
   'test_ai_connection',
+  'list_ai_models',
   'search_local',
   'search_ai_semantic',
   'trigger_ai_categorize',

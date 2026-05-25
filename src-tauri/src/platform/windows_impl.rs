@@ -12,13 +12,14 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Positio
 use windows::{
     core::w,
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
             ClientToScreen, GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
         },
         System::{
             Console::GetConsoleWindow, DataExchange::AddClipboardFormatListener,
             LibraryLoader::GetModuleHandleW,
+            Threading::{AttachThreadInput, GetCurrentThreadId},
         },
         UI::{
             Input::KeyboardAndMouse::{
@@ -26,7 +27,7 @@ use windows::{
                 KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_RWIN,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+                BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
                 GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowRect,
                 GetWindowThreadProcessId, PostQuitMessage, RegisterClassW, SetForegroundWindow,
                 SetWindowsHookExW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
@@ -102,16 +103,16 @@ pub fn set_run_at_startup(_app: &AppHandle, enable: bool) -> Result<(), String> 
     Ok(())
 }
 
-    pub fn set_hide_console_window(enable: bool) -> Result<(), String> {
-        unsafe {
-            let hwnd = GetConsoleWindow();
-            if !hwnd.0.is_null() {
-                let command = if enable { SW_HIDE } else { SW_SHOWNORMAL };
-                let _ = ShowWindow(hwnd, command);
-            }
+pub fn set_hide_console_window(enable: bool) -> Result<(), String> {
+    unsafe {
+        let hwnd = GetConsoleWindow();
+        if !hwnd.0.is_null() {
+            let command = if enable { SW_HIDE } else { SW_SHOWNORMAL };
+            let _ = ShowWindow(hwnd, command);
         }
-        Ok(())
     }
+    Ok(())
+}
 
 pub fn hide_main_window(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
@@ -137,14 +138,33 @@ pub fn paste_text_and_hide(
     {
         unsafe {
             let target = HWND(hwnd as *mut _);
-            let _ = ShowWindow(target, SW_SHOWNORMAL);
-            let _ = SetForegroundWindow(target);
+            restore_target_window(target);
         }
     }
 
-    thread::sleep(Duration::from_millis(70));
+    thread::sleep(Duration::from_millis(140));
     send_ctrl_v();
     Ok(())
+}
+
+unsafe fn restore_target_window(target: HWND) {
+    if target.0.is_null() {
+        return;
+    }
+
+    let current_thread = GetCurrentThreadId();
+    let target_thread = GetWindowThreadProcessId(target, None);
+    let attached = target_thread != 0
+        && target_thread != current_thread
+        && AttachThreadInput(current_thread, target_thread, BOOL(1)).as_bool();
+
+    let _ = ShowWindow(target, SW_SHOWNORMAL);
+    let _ = BringWindowToTop(target);
+    let _ = SetForegroundWindow(target);
+
+    if attached {
+        let _ = AttachThreadInput(current_thread, target_thread, BOOL(0));
+    }
 }
 
 pub fn show_main_window(

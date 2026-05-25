@@ -63,11 +63,11 @@ impl Default for AppSettings {
             run_at_startup: false,
             hide_console_window: true,
             ai_protocol: "openai".to_string(),
-            openai_base_url: "https://token-plan-cn.xiaomimimo.com/v1".to_string(),
-            anthropic_base_url: "https://token-plan-cn.xiaomimimo.com/anthropic".to_string(),
+            openai_base_url: "https://api.xiaomimimo.com/v1".to_string(),
+            anthropic_base_url: "https://api.xiaomimimo.com/anthropic".to_string(),
             api_key: String::new(),
-            search_model: "mimo2.5pro".to_string(),
-            ocr_model: "mimo2.5pro".to_string(),
+            search_model: "mimo-v2.5-pro".to_string(),
+            ocr_model: "mimo-v2.5".to_string(),
         }
     }
 }
@@ -91,6 +91,15 @@ impl AppSettings {
         self.search_model = self.search_model.trim().to_string();
         self.ocr_model = self.ocr_model.trim().to_string();
 
+        if self.openai_base_url == "https://token-plan-cn.xiaomimimo.com/v1" {
+            self.openai_base_url = "https://api.xiaomimimo.com/v1".to_string();
+        }
+        if self.anthropic_base_url == "https://token-plan-cn.xiaomimimo.com/anthropic" {
+            self.anthropic_base_url = "https://api.xiaomimimo.com/anthropic".to_string();
+        }
+        self.search_model = normalize_model_name(&self.search_model);
+        self.ocr_model = normalize_model_name(&self.ocr_model);
+
         let defaults = Self::default();
         if self.openai_base_url.is_empty() {
             self.openai_base_url = defaults.openai_base_url;
@@ -105,6 +114,14 @@ impl AppSettings {
             self.ocr_model = self.search_model.clone();
         }
         self
+    }
+}
+
+fn normalize_model_name(model: &str) -> String {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "mimo2.5pro" | "mimo-v2.5pro" | "mimo-v25-pro" | "mimo-v2-5-pro" => "mimo-v2.5-pro".to_string(),
+        "mimo2.5" | "mimo-v25" | "mimo-v2-5" => "mimo-v2.5".to_string(),
+        value => value.to_string(),
     }
 }
 

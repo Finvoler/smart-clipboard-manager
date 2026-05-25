@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Archive, Bot, ChevronLeft, ChevronRight, Clock, Edit3, FolderPlus, Image as ImageIcon, Pin, Power, Save, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { Archive, Bot, ChevronLeft, ChevronRight, Clock, Edit3, FolderPlus, Image as ImageIcon, Pin, Power, RefreshCw, Save, Search, Settings, Star, TestTube2, Trash2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
@@ -14,6 +14,7 @@ export function App() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [quickItems, setQuickItems] = useState<QuickItem[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [modelOptions, setModelOptions] = useState<string[]>(['mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-flash']);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -118,8 +119,48 @@ export function App() {
     }
   }
 
+  async function refreshModelOptions() {
+    try {
+      await saveSettings();
+      const models = await call<string[]>('list_ai_models');
+      setModelOptions(models);
+      setSettingsStatus(`Loaded ${models.length} models`);
+    } catch (error) {
+      setSettingsStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function pasteApiKeyFromClipboard() {
+    try {
+      const apiKey = (await navigator.clipboard.readText()).trim();
+      if (!apiKey) {
+        setSettingsStatus('Clipboard is empty');
+        return;
+      }
+      updateSettings({ apiKey });
+      setSettingsStatus('API key pasted locally');
+    } catch (error) {
+      setSettingsStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function executePaste(id: string, overrideText?: string) {
-    await call('execute_paste', { itemId: id, overrideText });
+    try {
+      await call('execute_paste', { itemId: id, overrideText });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function pasteFromRecord(event: MouseEvent<HTMLElement>, item: ClipboardItem) {
+    const target = event.target as HTMLElement;
+    if (editingId === item.id || target.closest('button, input, textarea, select, a')) return;
+    void executePaste(item.id);
+  }
+
+  function stopAndRun(event: MouseEvent, action: () => void) {
+    event.stopPropagation();
+    action();
   }
 
   async function saveEdit(id: string) {
@@ -190,9 +231,6 @@ export function App() {
           <button className="iconButton" onClick={categorize} title="AI archive">
             <Archive size={17} />
           </button>
-          <button className="iconButton" onClick={() => void call('hide_window')} title="Hide">
-            <X size={17} />
-          </button>
         </header>
 
         {status ? <div className="statusLine">{status}</div> : null}
@@ -203,33 +241,41 @@ export function App() {
               key={item.id}
               className={`historyItem ${selectedId === item.id ? 'selected' : ''}`}
               onMouseEnter={() => setSelectedId(item.id)}
+              onClick={(event) => pasteFromRecord(event, item)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && editingId !== item.id) {
+                  event.preventDefault();
+                  void executePaste(item.id);
+                }
+              }}
+              tabIndex={0}
             >
               <div className="itemHeader">
-                <button className="pasteTarget" onClick={() => executePaste(item.id)} title="Paste this item">
+                <button className="pasteTarget" onClick={(event) => stopAndRun(event, () => void executePaste(item.id))} title="Paste this item">
                   {item.kind === 'image' ? <ImageIcon size={16} /> : <Clock size={16} />}
                   <span>{formatTime(item.createdAt)}</span>
                 </button>
                 <div className="itemActions">
-                  <button className="iconButton small" onClick={() => toggleStar(item)} title="Star">
+                  <button className="iconButton small" onClick={(event) => stopAndRun(event, () => void toggleStar(item))} title="Star">
                     <Star size={15} fill={item.isStar ? 'currentColor' : 'none'} />
                   </button>
                   {item.kind === 'text' ? (
                     <button
                       className="iconButton small"
-                      onClick={() => {
+                      onClick={(event) => stopAndRun(event, () => {
                         setEditingId(item.id);
                         setEditingText(item.content ?? '');
-                      }}
+                      })}
                       title="Edit text"
                     >
                       <Edit3 size={15} />
                     </button>
                   ) : (
-                    <button className="iconButton small" onClick={() => runOcr(item)} title="OCR image">
+                    <button className="iconButton small" onClick={(event) => stopAndRun(event, () => void runOcr(item))} title="OCR image">
                       <Bot size={15} />
                     </button>
                   )}
-                  <button className="iconButton small danger" onClick={() => removeItem(item.id)} title="Delete">
+                  <button className="iconButton small danger" onClick={(event) => stopAndRun(event, () => void removeItem(item.id))} title="Delete">
                     <Trash2 size={15} />
                   </button>
                 </div>
@@ -246,11 +292,11 @@ export function App() {
               ) : item.kind === 'image' ? (
                 <ImagePreview item={item} />
               ) : (
-                <button className="markdownButton" onClick={() => executePaste(item.id)}>
+                <div className="markdownButton" role="button" tabIndex={-1}>
                   <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeHighlight]}>
                     {item.content ?? item.preview}
                   </ReactMarkdown>
-                </button>
+                </div>
               )}
             </article>
           ))}
@@ -266,9 +312,12 @@ export function App() {
           <SettingsSection
             settings={settings}
             status={settingsStatus}
+            modelOptions={modelOptions}
             onChange={updateSettings}
             onSave={() => void saveSettings()}
             onTest={() => void testAiConnection()}
+            onRefreshModels={() => void refreshModelOptions()}
+            onPasteKey={() => void pasteApiKeyFromClipboard()}
           />
         ) : null}
 
@@ -300,10 +349,13 @@ export function App() {
   );
 }
 
-function SettingsSection({ settings, status, onChange, onSave, onTest }: { settings: AppSettings; status: string; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; }) {
+function SettingsSection({ settings, status, modelOptions, onChange, onSave, onTest, onRefreshModels, onPasteKey }: { settings: AppSettings; status: string; modelOptions: string[]; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; onRefreshModels: () => void; onPasteKey: () => void; }) {
   return (
     <section className="sideSection settingsSection">
       <h2><Settings size={15} /> API Settings</h2>
+      <datalist id="mimo-models">
+        {modelOptions.map((model) => <option key={model} value={model} />)}
+      </datalist>
 
       <label className="toggleRow">
         <input type="checkbox" checked={settings.appEnabled} onChange={(event) => onChange({ appEnabled: event.target.checked })} />
@@ -344,20 +396,24 @@ function SettingsSection({ settings, status, onChange, onSave, onTest }: { setti
       </label>
       <label className="fieldLabel">
         API key
-        <input type="password" value={settings.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} />
+        <span className="secretRow">
+          <input type="password" value={settings.apiKey} onChange={(event) => onChange({ apiKey: event.target.value })} />
+          <button type="button" onClick={onPasteKey}>Paste</button>
+        </span>
       </label>
       <label className="fieldLabel">
         Search / archive model
-        <input value={settings.searchModel} onChange={(event) => onChange({ searchModel: event.target.value })} />
+        <input list="mimo-models" value={settings.searchModel} onChange={(event) => onChange({ searchModel: event.target.value })} />
       </label>
       <label className="fieldLabel">
         OCR model
-        <input value={settings.ocrModel} onChange={(event) => onChange({ ocrModel: event.target.value })} />
+        <input list="mimo-models" value={settings.ocrModel} onChange={(event) => onChange({ ocrModel: event.target.value })} />
       </label>
 
       <div className="settingsActions">
         <button onClick={onSave}><Save size={14} /> Save</button>
         <button onClick={onTest}><TestTube2 size={14} /> Test</button>
+        <button onClick={onRefreshModels}><RefreshCw size={14} /> Models</button>
       </div>
       {status ? <div className="settingsStatus">{status}</div> : null}
     </section>
@@ -367,11 +423,11 @@ function SettingsSection({ settings, status, onChange, onSave, onTest }: { setti
 function ImagePreview({ item }: { item: ClipboardItem }) {
   const src = fileSrc(item.imagePath);
   return (
-    <button className="imageCard" onClick={() => item.content && undefined}>
+    <div className="imageCard">
       {src ? <img src={src} alt={item.preview} /> : <ImageIcon size={42} />}
       <span>{item.width ?? '?'} x {item.height ?? '?'}</span>
       {src ? <img className="hoverImage" src={src} alt="Full preview" /> : null}
-    </button>
+    </div>
   );
 }
 

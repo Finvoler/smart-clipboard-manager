@@ -173,6 +173,20 @@ pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, St
 }
 
 #[tauri::command]
+pub async fn list_ai_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .clone();
+    match ai::list_models(&settings).await {
+        Ok(models) => Ok(models),
+        Err(error) if error.contains("API key is empty") => Ok(ai::known_models()),
+        Err(error) => Err(error),
+    }
+}
+
+#[tauri::command]
 pub fn update_quick_item(
     id: String,
     content: String,

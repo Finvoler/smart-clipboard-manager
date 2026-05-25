@@ -40,11 +40,20 @@ pub fn run() {
             commands::get_app_settings,
             commands::save_app_settings,
             commands::test_ai_connection,
+            commands::list_ai_models,
             commands::search_local,
             commands::search_ai_semantic,
             commands::trigger_ai_categorize,
             commands::trigger_ocr
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;

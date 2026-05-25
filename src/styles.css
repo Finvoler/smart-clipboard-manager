@@ -28,7 +28,7 @@ button {
 
 .shell {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(190px, 1fr);
+  grid-template-columns: minmax(0, 1fr) 230px;
   width: 100vw;
   height: 100vh;
   border: 1px solid #cfd8d2;
@@ -48,7 +48,7 @@ button {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) 34px 34px 34px;
+  grid-template-columns: minmax(150px, 1fr) 34px 34px;
   gap: 7px;
   align-items: center;
   padding: 12px;
@@ -108,11 +108,17 @@ button {
   border: 1px solid #d6ded8;
   border-radius: 8px;
   background: #ffffff;
+  cursor: pointer;
 }
 
 .historyItem.selected {
   border-color: #4f7d6a;
   box-shadow: 0 0 0 2px rgba(79, 125, 106, 0.12);
+}
+
+.historyItem:focus-visible {
+  outline: 2px solid #4f7d6a;
+  outline-offset: 2px;
 }
 
 .itemHeader {
@@ -317,6 +323,23 @@ button {
   background: #ffffff;
 }
 
+.secretRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  gap: 6px;
+}
+
+.secretRow button {
+  min-height: 30px;
+  border: 1px solid #c8d2cc;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.secretRow button:hover {
+  background: #e3eee7;
+}
+
 .toggleRow {
   display: flex;
   align-items: center;
@@ -339,6 +362,10 @@ button {
   grid-template-columns: 1fr 1fr;
   gap: 7px;
   margin-top: 9px;
+}
+
+.settingsActions button:last-child {
+  grid-column: 1 / -1;
 }
 
 .settingsActions button {
@@ -367,9 +394,9 @@ button {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 840px) {
+@media (max-width: 620px) {
   body { min-width: 360px; }
   .shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }
-  .toolbar { grid-template-columns: minmax(160px, 1fr) 34px 34px 34px; }
+  .toolbar { grid-template-columns: minmax(160px, 1fr) 34px 34px; }
 }

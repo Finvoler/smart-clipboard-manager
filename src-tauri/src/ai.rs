@@ -5,6 +5,18 @@ use serde_json::Value;
 
 use crate::models::{AppSettings, CategoryAssignment, ClipboardItem};
 
+const KNOWN_MIMO_MODELS: [&str; 9] = [
+    "mimo-v2.5-pro",
+    "mimo-v2.5",
+    "mimo-v2.5-tts",
+    "mimo-v2.5-tts-voicedesign",
+    "mimo-v2.5-tts-voiceclone",
+    "mimo-v2-pro",
+    "mimo-v2-omni",
+    "mimo-v2-tts",
+    "mimo-v2-flash",
+];
+
 pub async fn test_connection(settings: &AppSettings) -> Result<String, String> {
     let settings = settings.clone().normalized();
     ensure_ai_ready(&settings, false)?;
@@ -24,6 +36,36 @@ pub async fn test_connection(settings: &AppSettings) -> Result<String, String> {
             content.chars().take(120).collect::<String>()
         ))
     }
+}
+
+pub async fn list_models(settings: &AppSettings) -> Result<Vec<String>, String> {
+    let settings = settings.clone().normalized();
+    ensure_api_key(&settings)?;
+    let response = reqwest::Client::new()
+        .get(&openai_models_url(&settings))
+        .bearer_auth(&settings.api_key)
+        .header("api-key", &settings.api_key)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let value = response_json(response).await?;
+    let mut models = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id").and_then(|id| id.as_str()).map(ToString::to_string))
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        models.extend(KNOWN_MIMO_MODELS.iter().map(|model| model.to_string()));
+    }
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+pub fn known_models() -> Vec<String> {
+    KNOWN_MIMO_MODELS.iter().map(|model| model.to_string()).collect()
 }
 
 pub async fn semantic_search(
@@ -148,13 +190,16 @@ pub async fn ocr_image(settings: &AppSettings, item: &ClipboardItem) -> Result<S
 }
 
 fn ensure_ai_ready(settings: &AppSettings, ocr: bool) -> Result<(), String> {
-    if settings.api_key.is_empty() {
-        return Err(
-            "AI API key is empty. Open AI Settings in the sidebar and save it first.".to_string(),
-        );
-    }
+    ensure_api_key(settings)?;
     if settings.search_model.is_empty() || (ocr && settings.ocr_model.is_empty()) {
         return Err("AI model is empty. Set search/archive and OCR model names first.".to_string());
+    }
+    Ok(())
+}
+
+fn ensure_api_key(settings: &AppSettings) -> Result<(), String> {
+    if settings.api_key.is_empty() {
+        return Err("AI API key is empty. Paste it in API Settings and save it first.".to_string());
     }
     Ok(())
 }
@@ -191,7 +236,8 @@ async fn complete_openai_text(
 ) -> Result<String, String> {
     let body = serde_json::json!({
       "model": model,
-      "temperature": 0.1,
+            "max_completion_tokens": 1200,
+            "thinking": { "type": "disabled" },
       "messages": [
         { "role": "system", "content": system },
         { "role": "user", "content": user }
@@ -209,7 +255,8 @@ async fn complete_openai_image(
 ) -> Result<String, String> {
     let body = serde_json::json!({
       "model": model,
-      "temperature": 0.0,
+            "max_completion_tokens": 2000,
+            "thinking": { "type": "disabled" },
       "messages": [
         {
           "role": "user",
@@ -267,6 +314,7 @@ async fn post_json_bearer(url: &str, api_key: &str, body: Value) -> Result<Value
     let response = reqwest::Client::new()
         .post(url)
         .bearer_auth(api_key)
+        .header("api-key", api_key)
         .json(&body)
         .send()
         .await
@@ -277,6 +325,7 @@ async fn post_json_bearer(url: &str, api_key: &str, body: Value) -> Result<Value
 async fn post_json_anthropic(url: &str, api_key: &str, body: Value) -> Result<Value, String> {
     let response = reqwest::Client::new()
         .post(url)
+        .header("api-key", api_key)
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .json(&body)
@@ -304,6 +353,17 @@ fn openai_chat_url(settings: &AppSettings) -> String {
         base.to_string()
     } else {
         format!("{base}/chat/completions")
+    }
+}
+
+fn openai_models_url(settings: &AppSettings) -> String {
+    let base = settings.openai_base_url.trim_end_matches('/');
+    if base.ends_with("/models") {
+        base.to_string()
+    } else if base.ends_with("/chat/completions") {
+        format!("{}/models", base.trim_end_matches("/chat/completions"))
+    } else {
+        format!("{base}/models")
     }
 }
 

@@ -23,11 +23,11 @@ const demoSettings: AppSettings = {
   runAtStartup: false,
   hideConsoleWindow: true,
   aiProtocol: 'openai',
-  openaiBaseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-  anthropicBaseUrl: 'https://token-plan-cn.xiaomimimo.com/anthropic',
+  openaiBaseUrl: 'https://api.xiaomimimo.com/v1',
+  anthropicBaseUrl: 'https://api.xiaomimimo.com/anthropic',
   apiKey: '',
-  searchModel: 'mimo2.5pro',
-  ocrModel: 'mimo2.5pro',
+  searchModel: 'mimo-v2.5-pro',
+  ocrModel: 'mimo-v2.5',
 };
 
 export function fileSrc(path?: string | null): string | undefined {
@@ -44,6 +44,7 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (command === 'get_app_settings') return demoSettings as T;
   if (command === 'save_app_settings') return { ...demoSettings, ...(args?.settings as Partial<AppSettings> | undefined) } as T;
   if (command === 'test_ai_connection') return 'Demo runtime: Tauri is not available' as T;
+  if (command === 'list_ai_models') return ['mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-flash'] as T;
   if (command === 'search_local') return demoItems as T;
   if (command === 'hide_window') return undefined as T;
   if (command === 'execute_paste') return undefined as T;
