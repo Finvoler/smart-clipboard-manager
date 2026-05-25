@@ -1,12 +1,13 @@
 use std::sync::atomic::Ordering;
 
-use tauri::{AppHandle, State};
+use base64::{engine::general_purpose, Engine as _};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     ai,
     db::AppError,
-    models::{AppSettings, ClipboardItem, Folder, QuickItem},
-    platform, AppState,
+    models::{AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion},
+    platform, sync_tray_menu, AppState,
 };
 
 #[tauri::command]
@@ -21,23 +22,52 @@ pub fn execute_paste(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let text = if let Some(text) = override_text {
-        text
-    } else {
+    if let Some(text) = override_text {
+        paste_text_and_track(&app, &state, &text)?;
+        return Ok(());
+    }
+
+    let item = {
         let db = state
             .db
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
-        let item = db
-            .get_item(&item_id)
+        db.get_item(&item_id)
             .map_err(String::from)?
-            .ok_or_else(|| "record not found".to_string())?;
-        item.content
-            .ok_or_else(|| "image records need OCR before text paste".to_string())?
+            .ok_or_else(|| "record not found".to_string())?
     };
 
+    if item.kind == "image" {
+        let image_path = item
+            .image_path
+            .ok_or_else(|| "image file is missing".to_string())?;
+        state.ignore_next_clipboard.store(true, Ordering::SeqCst);
+        platform::paste_image_and_hide(&app, &image_path, &state.last_foreground_window)?;
+        return Ok(());
+    }
+
+    let text = item
+        .content
+        .ok_or_else(|| "text record has no content".to_string())?;
+    paste_text_and_track(&app, &state, &text)
+}
+
+fn paste_text_and_track(app: &AppHandle, state: &AppState, text: &str) -> Result<(), String> {
     state.ignore_next_clipboard.store(true, Ordering::SeqCst);
-    platform::paste_text_and_hide(&app, &text, &state.last_foreground_window)
+    platform::paste_text_and_hide(app, text, &state.last_foreground_window)?;
+
+    let quick_suggestions = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "database lock poisoned".to_string())?;
+        db.observe_text_for_quick_pool(&text)
+            .map_err(String::from)?
+    };
+    for quick_suggestion in quick_suggestions {
+        let _ = app.emit("on_quick_suggestion_detected", quick_suggestion);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -78,6 +108,27 @@ pub fn delete_item(id: String, state: State<'_, AppState>) -> Result<(), String>
 }
 
 #[tauri::command]
+pub fn get_image_data_url(id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let item = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "database lock poisoned".to_string())?;
+        db.get_item(&id)
+            .map_err(String::from)?
+            .ok_or_else(|| AppError::NotFound.to_string())?
+    };
+    let path = item
+        .image_path
+        .ok_or_else(|| "image record has no local image path".to_string())?;
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+#[tauri::command]
 pub fn toggle_star(
     id: String,
     is_star: bool,
@@ -109,6 +160,15 @@ pub fn create_folder(name: String, state: State<'_, AppState>) -> Result<Folder,
 }
 
 #[tauri::command]
+pub fn delete_folder(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.delete_folder(&id).map_err(String::from)
+}
+
+#[tauri::command]
 pub fn move_to_folder(
     item_id: String,
     folder_id: Option<String>,
@@ -132,6 +192,15 @@ pub fn get_quick_pool(state: State<'_, AppState>) -> Result<Vec<QuickItem>, Stri
 }
 
 #[tauri::command]
+pub fn get_quick_suggestions(state: State<'_, AppState>) -> Result<Vec<QuickSuggestion>, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.get_quick_suggestions().map_err(String::from)
+}
+
+#[tauri::command]
 pub fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     state
         .settings
@@ -142,10 +211,11 @@ pub fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, Strin
 
 #[tauri::command]
 pub fn save_app_settings(
-    settings: AppSettings,
+    mut settings: AppSettings,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AppSettings, String> {
+    settings.app_enabled = true;
     let saved = {
         let db = state
             .db
@@ -156,6 +226,7 @@ pub fn save_app_settings(
 
     platform::set_run_at_startup(&app, saved.run_at_startup)?;
     platform::set_hide_console_window(saved.hide_console_window)?;
+    sync_tray_menu(&app, saved.intercept_win_v)?;
     if let Ok(mut cached) = state.settings.lock() {
         *cached = saved.clone();
     }
@@ -202,6 +273,47 @@ pub fn update_quick_item(
 }
 
 #[tauri::command]
+pub fn accept_quick_suggestion(
+    id: String,
+    ttl: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<QuickItem, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.accept_quick_suggestion(&id, ttl.unwrap_or(24 * 60 * 60))
+        .map_err(String::from)
+}
+
+#[tauri::command]
+pub fn dismiss_quick_suggestion(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.dismiss_quick_suggestion(&id).map_err(String::from)
+}
+
+#[tauri::command]
+pub fn delete_quick_item(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.delete_quick_item(&id).map_err(String::from)
+}
+
+#[tauri::command]
+pub fn star_quick_item(id: String, state: State<'_, AppState>) -> Result<ClipboardItem, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.star_quick_item(&id).map_err(String::from)
+}
+
+#[tauri::command]
 pub fn search_local(
     keyword: String,
     state: State<'_, AppState>,
@@ -223,7 +335,7 @@ pub async fn search_ai_semantic(
             .db
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
-        db.search_local(&query).map_err(String::from)?
+        db.get_history(300, 0).map_err(String::from)?
     };
     let settings = state
         .settings
@@ -237,19 +349,22 @@ pub async fn search_ai_semantic(
 pub async fn trigger_ai_categorize(
     state: State<'_, AppState>,
 ) -> Result<Vec<ClipboardItem>, String> {
-    let records = {
+    let (records, folders) = {
         let db = state
             .db
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
-        db.recent_uncategorized(80).map_err(String::from)?
+        (
+            db.recent_uncategorized(80).map_err(String::from)?,
+            db.get_folders().map_err(String::from)?,
+        )
     };
     let settings = state
         .settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .clone();
-    let assignments = ai::categorize(&settings, records).await?;
+    let assignments = ai::categorize(&settings, records, folders).await?;
     let db = state
         .db
         .lock()
@@ -281,15 +396,23 @@ pub async fn trigger_ocr(
             .map_err(String::from)?
             .ok_or_else(|| AppError::NotFound.to_string())?
     };
+    if item
+        .ocr_text
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        return Ok(item);
+    }
     let settings = state
         .settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .clone();
     let text = ai::ocr_image(&settings, &item).await?;
-    let mut db = state
+    let db = state
         .db
         .lock()
         .map_err(|_| "database lock poisoned".to_string())?;
-    db.insert_text_item_from_ocr(&text).map_err(String::from)
+    db.update_image_ocr_text(&image_id, &text)
+        .map_err(String::from)
 }

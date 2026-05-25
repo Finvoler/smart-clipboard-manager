@@ -1,39 +1,49 @@
 use std::{
+    borrow::Cow,
+    fs, io,
+    path::{Path, PathBuf},
     ptr::null_mut,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex, OnceLock,
     },
     thread,
     time::Duration,
 };
 
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size};
 use windows::{
-    core::w,
+    core::{w, Interface, HSTRING},
     Win32::{
         Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
             ClientToScreen, GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
         },
         System::{
-            Console::GetConsoleWindow, DataExchange::AddClipboardFormatListener,
+            Com::{
+                CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile,
+                CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+            },
+            Console::GetConsoleWindow,
+            DataExchange::AddClipboardFormatListener,
             LibraryLoader::GetModuleHandleW,
             Threading::{AttachThreadInput, GetCurrentThreadId},
         },
+        UI::Shell::{IShellLinkW, ShellLink},
         UI::{
             Input::KeyboardAndMouse::{
                 SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
                 KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_RWIN,
             },
             WindowsAndMessaging::{
-                BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-                GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowRect,
-                GetWindowThreadProcessId, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-                SetWindowsHookExW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-                GUITHREADINFO, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, SW_HIDE, SW_SHOWNORMAL,
-                WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY,
-                WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
+                BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW,
+                DispatchMessageW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
+                GetWindowRect, GetWindowThreadProcessId, IsIconic, PostQuitMessage, RegisterClassW,
+                SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CS_HREDRAW,
+                CS_VREDRAW, GUITHREADINFO, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+                MSG, SW_HIDE, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, WH_KEYBOARD_LL,
+                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_KEYDOWN,
+                WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
             },
         },
     },
@@ -42,10 +52,12 @@ use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 use crate::{models::ClipboardItem, AppState};
 
-const WINDOW_WIDTH: u32 = 760;
-const WINDOW_HEIGHT: u32 = 540;
+const WINDOW_WIDTH: f64 = 960.0;
+const WINDOW_HEIGHT: f64 = 640.0;
 const WINDOW_MARGIN: i32 = 10;
 const STARTUP_VALUE_NAME: &str = "SmartClipboardManager";
+const STARTUP_SHORTCUT_NAME: &str = "Smart Clipboard Manager.lnk";
+const STARTUP_ARG: &str = "--startup";
 
 static CLIPBOARD_RUNTIME: OnceLock<ClipboardRuntime> = OnceLock::new();
 static HOTKEY_RUNTIME: OnceLock<HotkeyRuntime> = OnceLock::new();
@@ -62,6 +74,9 @@ struct ClipboardRuntime {
 struct HotkeyRuntime {
     app: AppHandle,
     win_down: Arc<AtomicBool>,
+    win_forwarded: Arc<AtomicBool>,
+    smart_win_v_active: Arc<AtomicBool>,
+    held_win_vk: Arc<AtomicU32>,
     settings: Arc<Mutex<crate::models::AppSettings>>,
     last_foreground_window: Arc<Mutex<Option<isize>>>,
 }
@@ -76,6 +91,9 @@ pub fn start_system_integrations(app: AppHandle, state: &AppState) {
     let hotkey_runtime = HotkeyRuntime {
         app,
         win_down: Arc::new(AtomicBool::new(false)),
+        win_forwarded: Arc::new(AtomicBool::new(false)),
+        smart_win_v_active: Arc::new(AtomicBool::new(false)),
+        held_win_vk: Arc::new(AtomicU32::new(0)),
         settings: state.settings.clone(),
         last_foreground_window: state.last_foreground_window.clone(),
     };
@@ -88,19 +106,120 @@ pub fn start_system_integrations(app: AppHandle, state: &AppState) {
 }
 
 pub fn set_run_at_startup(_app: &AppHandle, enable: bool) -> Result<(), String> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (run_key, _) = hkcu
-        .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
-        .map_err(|error| error.to_string())?;
     if enable {
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        run_key
-            .set_value(STARTUP_VALUE_NAME, &format!("\"{}\"", exe.display()))
-            .map_err(|error| error.to_string())?;
+        match ensure_startup_shortcut(&exe) {
+            Ok(()) => {
+                let _ = remove_startup_registry_value();
+                return Ok(());
+            }
+            Err(shortcut_error) => {
+                ensure_startup_registry_value(&exe).map_err(|registry_error| {
+                    format!(
+                        "startup shortcut failed: {shortcut_error}; registry fallback failed: {registry_error}"
+                    )
+                })?;
+            }
+        }
     } else {
-        let _ = run_key.delete_value(STARTUP_VALUE_NAME);
+        let shortcut_result = remove_startup_shortcut();
+        let registry_result = remove_startup_registry_value();
+        if shortcut_result.is_err() && registry_result.is_err() {
+            return Err(format!(
+                "failed to remove startup shortcut: {}; failed to remove registry startup: {}",
+                shortcut_result.unwrap_err(),
+                registry_result.unwrap_err()
+            ));
+        }
     }
     Ok(())
+}
+
+fn startup_shortcut_path() -> Result<PathBuf, String> {
+    let appdata =
+        std::env::var_os("APPDATA").ok_or_else(|| "APPDATA is not available".to_string())?;
+    Ok(PathBuf::from(appdata)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("Startup")
+        .join(STARTUP_SHORTCUT_NAME))
+}
+
+fn ensure_startup_shortcut(exe: &Path) -> Result<(), String> {
+    let shortcut_path = startup_shortcut_path()?;
+    if let Some(parent) = shortcut_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    if shortcut_path.exists() {
+        let _ = fs::remove_file(&shortcut_path);
+    }
+    create_startup_shortcut(exe, &shortcut_path)
+}
+
+fn remove_startup_shortcut() -> Result<(), String> {
+    match fs::remove_file(startup_shortcut_path()?) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn ensure_startup_registry_value(exe: &Path) -> Result<(), String> {
+    let run_key = startup_registry_key()?;
+    let desired = format!("\"{}\" {STARTUP_ARG}", exe.display());
+    if run_key
+        .get_value::<String, _>(STARTUP_VALUE_NAME)
+        .is_ok_and(|current| current == desired)
+    {
+        return Ok(());
+    }
+    run_key
+        .set_value(STARTUP_VALUE_NAME, &desired)
+        .map_err(|error| error.to_string())
+}
+
+fn remove_startup_registry_value() -> Result<(), String> {
+    let run_key = startup_registry_key()?;
+    match run_key.delete_value(STARTUP_VALUE_NAME) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn startup_registry_key() -> Result<RegKey, String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    hkcu.create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
+        .map(|(key, _)| key)
+        .map_err(|error| error.to_string())
+}
+
+fn create_startup_shortcut(exe: &Path, shortcut_path: &Path) -> Result<(), String> {
+    unsafe {
+        let com_initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let result = (|| -> windows::core::Result<()> {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+            link.SetPath(&HSTRING::from(exe.to_string_lossy().as_ref()))?;
+            link.SetArguments(&HSTRING::from(STARTUP_ARG))?;
+            if let Some(parent) = exe.parent() {
+                link.SetWorkingDirectory(&HSTRING::from(parent.to_string_lossy().as_ref()))?;
+            }
+            link.SetDescription(&HSTRING::from("Smart Clipboard Manager"))?;
+            link.SetIconLocation(&HSTRING::from(exe.to_string_lossy().as_ref()), 0)?;
+            link.SetShowCmd(SW_SHOWMINNOACTIVE)?;
+            let persist_file: IPersistFile = link.cast()?;
+            persist_file.Save(
+                &HSTRING::from(shortcut_path.to_string_lossy().as_ref()),
+                true,
+            )
+        })();
+        if com_initialized {
+            CoUninitialize();
+        }
+        result.map_err(|error| error.to_string())
+    }
 }
 
 pub fn set_hide_console_window(enable: bool) -> Result<(), String> {
@@ -115,6 +234,7 @@ pub fn set_hide_console_window(enable: bool) -> Result<(), String> {
 }
 
 pub fn hide_main_window(app: &AppHandle) -> Result<(), String> {
+    clear_hotkey_state();
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|error| error.to_string())?;
     }
@@ -130,6 +250,43 @@ pub fn paste_text_and_hide(
     clipboard
         .set_text(text.to_string())
         .map_err(|error| error.to_string())?;
+    clear_hotkey_state();
+    hide_main_window(app)?;
+
+    if let Some(hwnd) = *last_foreground_window
+        .lock()
+        .map_err(|_| "foreground window lock poisoned".to_string())?
+    {
+        unsafe {
+            let target = HWND(hwnd as *mut _);
+            restore_target_window(target);
+        }
+    }
+
+    thread::sleep(Duration::from_millis(140));
+    send_ctrl_v();
+    Ok(())
+}
+
+pub fn paste_image_and_hide(
+    app: &AppHandle,
+    image_path: &str,
+    last_foreground_window: &Arc<Mutex<Option<isize>>>,
+) -> Result<(), String> {
+    let image = image::open(Path::new(image_path))
+        .map_err(|error| error.to_string())?
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: Cow::Owned(image.into_raw()),
+        })
+        .map_err(|error| error.to_string())?;
+
+    clear_hotkey_state();
     hide_main_window(app)?;
 
     if let Some(hwnd) = *last_foreground_window
@@ -158,7 +315,9 @@ unsafe fn restore_target_window(target: HWND) {
         && target_thread != current_thread
         && AttachThreadInput(current_thread, target_thread, BOOL(1)).as_bool();
 
-    let _ = ShowWindow(target, SW_SHOWNORMAL);
+    if IsIconic(target).as_bool() {
+        let _ = ShowWindow(target, SW_RESTORE);
+    }
     let _ = BringWindowToTop(target);
     let _ = SetForegroundWindow(target);
 
@@ -173,17 +332,16 @@ pub fn show_main_window(
 ) -> Result<(), String> {
     let target_rect = capture_target_rect(last_foreground_window);
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_size(Size::Physical(PhysicalSize::new(
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
-        )));
-        if let Some((x, y)) = target_rect
-            .and_then(|rect| place_near_rect(rect, WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32))
+        let _ = window.set_size(Size::Logical(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT)));
+        let scale_factor = window.scale_factor().unwrap_or(1.0);
+        let physical_width = (WINDOW_WIDTH * scale_factor).round() as i32;
+        let physical_height = (WINDOW_HEIGHT * scale_factor).round() as i32;
+        if let Some((x, y)) =
+            target_rect.and_then(|rect| place_near_rect(rect, physical_width, physical_height))
         {
             let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
         }
         window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -275,10 +433,12 @@ fn capture_clipboard() {
             return;
         }
         if let Ok(mut db) = runtime.db.lock() {
-            if let Ok((item, quick_items)) = db.insert_text_item(&text) {
+            if let Ok((item, quick_suggestions)) = db.insert_text_item(&text) {
                 emit_new_item(&runtime.app, item);
-                for quick_item in quick_items {
-                    let _ = runtime.app.emit("on_quick_pool_extracted", quick_item);
+                for quick_suggestion in quick_suggestions {
+                    let _ = runtime
+                        .app
+                        .emit("on_quick_suggestion_detected", quick_suggestion);
                 }
             }
         }
@@ -335,24 +495,96 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     let is_down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
     let is_up = message == WM_KEYUP || message == WM_SYSKEYUP;
     let vk = keyboard.vkCode;
+    let is_win_key = vk == VK_LWIN.0 as u32 || vk == VK_RWIN.0 as u32;
+    let is_v_key = vk == 0x56;
 
-    if vk == VK_LWIN.0 as u32 || vk == VK_RWIN.0 as u32 {
-        runtime.win_down.store(is_down && !is_up, Ordering::SeqCst);
+    if (keyboard.flags.0 & LLKHF_INJECTED.0) != 0 {
+        return CallNextHookEx(HHOOK(null_mut()), code, wparam, lparam);
     }
 
-    if is_down && vk == 0x56 && runtime.win_down.load(Ordering::SeqCst) {
-        let should_intercept = runtime
-            .settings
-            .lock()
-            .map(|settings| settings.app_enabled && settings.intercept_win_v)
-            .unwrap_or(true);
-        if should_intercept {
-            show_main_window_from_hotkey(runtime);
+    let should_intercept = runtime
+        .settings
+        .lock()
+        .map(|settings| settings.app_enabled && settings.intercept_win_v)
+        .unwrap_or(true);
+
+    if !should_intercept {
+        reset_win_hotkey_state(runtime);
+        return CallNextHookEx(HHOOK(null_mut()), code, wparam, lparam);
+    }
+
+    if is_win_key {
+        if is_down {
+            runtime.win_down.store(true, Ordering::SeqCst);
+            runtime.win_forwarded.store(false, Ordering::SeqCst);
+            runtime.smart_win_v_active.store(false, Ordering::SeqCst);
+            runtime.held_win_vk.store(vk, Ordering::SeqCst);
+            return LRESULT(1);
+        }
+
+        if is_up {
+            let was_down = runtime.win_down.swap(false, Ordering::SeqCst);
+            let was_forwarded = runtime.win_forwarded.swap(false, Ordering::SeqCst);
+            let smart_active = runtime.smart_win_v_active.swap(false, Ordering::SeqCst);
+            let held_vk = runtime.held_win_vk.swap(0, Ordering::SeqCst);
+            let win_key = VIRTUAL_KEY((if held_vk == 0 { vk } else { held_vk }) as u16);
+
+            if was_forwarded {
+                send_key_event(win_key, KEYEVENTF_KEYUP);
+            } else if was_down && !smart_active {
+                send_key_event(win_key, KEYBD_EVENT_FLAGS(0));
+                send_key_event(win_key, KEYEVENTF_KEYUP);
+            }
             return LRESULT(1);
         }
     }
 
+    if runtime.smart_win_v_active.load(Ordering::SeqCst) {
+        if is_v_key {
+            if is_up {
+                reset_win_hotkey_state(runtime);
+            }
+            return LRESULT(1);
+        }
+        reset_win_hotkey_state(runtime);
+        return CallNextHookEx(HHOOK(null_mut()), code, wparam, lparam);
+    }
+
+    if runtime.win_down.load(Ordering::SeqCst) && is_down {
+        if is_v_key && !runtime.win_forwarded.load(Ordering::SeqCst) {
+            runtime.smart_win_v_active.store(true, Ordering::SeqCst);
+            show_main_window_from_hotkey(runtime);
+            return LRESULT(1);
+        }
+
+        if !runtime.win_forwarded.load(Ordering::SeqCst) {
+            let held_vk = runtime.held_win_vk.load(Ordering::SeqCst);
+            let win_key = VIRTUAL_KEY(
+                (if held_vk == 0 {
+                    VK_LWIN.0 as u32
+                } else {
+                    held_vk
+                }) as u16,
+            );
+            send_key_event(win_key, KEYBD_EVENT_FLAGS(0));
+            runtime.win_forwarded.store(true, Ordering::SeqCst);
+        }
+    }
+
     CallNextHookEx(HHOOK(null_mut()), code, wparam, lparam)
+}
+
+fn reset_win_hotkey_state(runtime: &HotkeyRuntime) {
+    runtime.win_down.store(false, Ordering::SeqCst);
+    runtime.win_forwarded.store(false, Ordering::SeqCst);
+    runtime.smart_win_v_active.store(false, Ordering::SeqCst);
+    runtime.held_win_vk.store(0, Ordering::SeqCst);
+}
+
+fn clear_hotkey_state() {
+    if let Some(runtime) = HOTKEY_RUNTIME.get() {
+        reset_win_hotkey_state(runtime);
+    }
 }
 
 fn show_main_window_from_hotkey(runtime: &HotkeyRuntime) {
@@ -407,6 +639,10 @@ fn capture_target_rect(last_foreground_window: &Arc<Mutex<Option<isize>>>) -> Op
 
             let mut rect = RECT::default();
             if GetWindowRect(foreground, &mut rect).is_ok() {
+                let mut cursor = POINT::default();
+                if GetCursorPos(&mut cursor).is_ok() && rect_contains_point(rect, cursor) {
+                    return Some(rect_from_point(cursor));
+                }
                 return Some(rect);
             }
         }
@@ -417,25 +653,81 @@ fn capture_target_rect(last_foreground_window: &Arc<Mutex<Option<isize>>>) -> Op
 fn place_near_rect(target: RECT, width: i32, height: i32) -> Option<(i32, i32)> {
     let work = monitor_work_area(target)?;
     let centered_x = target.left + ((target.right - target.left) / 2) - (width / 2);
-    let x = clamp(
-        centered_x,
-        work.left + WINDOW_MARGIN,
-        work.right - width - WINDOW_MARGIN,
-    );
     let above_y = target.top - height - WINDOW_MARGIN;
     let below_y = target.bottom + WINDOW_MARGIN;
-    let y = if above_y >= work.top + WINDOW_MARGIN {
-        above_y
-    } else if below_y + height <= work.bottom - WINDOW_MARGIN {
-        below_y
-    } else {
+
+    if above_y >= work.top + WINDOW_MARGIN {
+        return Some((
+            clamp(
+                centered_x,
+                work.left + WINDOW_MARGIN,
+                work.right - width - WINDOW_MARGIN,
+            ),
+            above_y,
+        ));
+    }
+
+    if below_y + height <= work.bottom - WINDOW_MARGIN {
+        return Some((
+            clamp(
+                centered_x,
+                work.left + WINDOW_MARGIN,
+                work.right - width - WINDOW_MARGIN,
+            ),
+            below_y,
+        ));
+    }
+
+    let centered_y = target.top + ((target.bottom - target.top) / 2) - (height / 2);
+    let right_x = target.right + WINDOW_MARGIN;
+    if right_x + width <= work.right - WINDOW_MARGIN {
+        return Some((
+            right_x,
+            clamp(
+                centered_y,
+                work.top + WINDOW_MARGIN,
+                work.bottom - height - WINDOW_MARGIN,
+            ),
+        ));
+    }
+
+    let left_x = target.left - width - WINDOW_MARGIN;
+    if left_x >= work.left + WINDOW_MARGIN {
+        return Some((
+            left_x,
+            clamp(
+                centered_y,
+                work.top + WINDOW_MARGIN,
+                work.bottom - height - WINDOW_MARGIN,
+            ),
+        ));
+    }
+
+    Some((
+        clamp(
+            centered_x,
+            work.left + WINDOW_MARGIN,
+            work.right - width - WINDOW_MARGIN,
+        ),
         clamp(
             target.top,
             work.top + WINDOW_MARGIN,
             work.bottom - height - WINDOW_MARGIN,
-        )
-    };
-    Some((x, y))
+        ),
+    ))
+}
+
+fn rect_contains_point(rect: RECT, point: POINT) -> bool {
+    point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom
+}
+
+fn rect_from_point(point: POINT) -> RECT {
+    RECT {
+        left: point.x - 4,
+        top: point.y - 4,
+        right: point.x + 4,
+        bottom: point.y + 18,
+    }
 }
 
 fn monitor_work_area(target: RECT) -> Option<RECT> {
@@ -472,6 +764,13 @@ fn key_input(key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
                 dwExtraInfo: 0,
             },
         },
+    }
+}
+
+fn send_key_event(key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) {
+    let inputs = [key_input(key, flags)];
+    unsafe {
+        let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     }
 }
 

@@ -14,6 +14,8 @@ export interface ClipboardItem {
   mimeType?: string | null;
   width?: number | null;
   height?: number | null;
+  imageHash?: string | null;
+  ocrText?: string | null;
 }
 
 export interface Folder {
@@ -32,6 +34,14 @@ export interface QuickItem {
   isPinned: boolean;
 }
 
+export interface QuickSuggestion {
+  id: string;
+  content: string;
+  hitCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AppSettings {
   appEnabled: boolean;
   captureEnabled: boolean;
@@ -44,4 +54,5 @@ export interface AppSettings {
   apiKey: string;
   searchModel: string;
   ocrModel: string;
+  language: 'zh' | 'en';
 }

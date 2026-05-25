@@ -5,13 +5,13 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::{
-    models::{AppSettings, ClipboardItem, Folder, QuickItem},
+    models::{AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion},
     quick_pool::extract_candidates,
 };
 
 const DAY_SECONDS: i64 = 24 * 60 * 60;
 const RETENTION_SECONDS: i64 = 30 * DAY_SECONDS;
-const QUICK_POOL_SECONDS: i64 = DAY_SECONDS;
+const QUICK_SUGGESTION_SECONDS: i64 = 5 * 60 * 60;
 const QUICK_THRESHOLD: i64 = 5;
 
 pub struct Database {
@@ -56,7 +56,9 @@ impl Database {
         expires_at INTEGER,
         mime_type TEXT,
         width INTEGER,
-        height INTEGER
+                height INTEGER,
+                image_hash TEXT,
+                ocr_text TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at DESC);
@@ -80,6 +82,14 @@ impl Database {
         is_pinned INTEGER NOT NULL DEFAULT 0
       );
 
+      CREATE TABLE IF NOT EXISTS quick_suggestions (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL UNIQUE,
+        hit_count INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS app_settings (
         id INTEGER PRIMARY KEY CHECK(id = 1),
         app_enabled INTEGER NOT NULL,
@@ -93,19 +103,42 @@ impl Database {
         api_key TEXT NOT NULL,
         search_model TEXT NOT NULL,
         ocr_model TEXT NOT NULL,
+        language TEXT NOT NULL DEFAULT 'zh',
         updated_at INTEGER NOT NULL
       );
       ",
         )?;
+        self.ensure_column("items", "image_hash", "TEXT")?;
+        self.ensure_column("items", "ocr_text", "TEXT")?;
+        self.ensure_column("app_settings", "language", "TEXT NOT NULL DEFAULT 'zh'")?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_items_image_hash ON items(image_hash)",
+            [],
+        )?;
         self.ensure_settings_row()?;
+        Ok(())
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), AppError> {
+        let mut statement = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            if row? == column {
+                return Ok(());
+            }
+        }
+        self.conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
         Ok(())
     }
 
     fn ensure_settings_row(&self) -> Result<(), AppError> {
         let defaults = AppSettings::default();
         self.conn.execute(
-      "INSERT OR IGNORE INTO app_settings (id, app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model, updated_at)
-       VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    "INSERT OR IGNORE INTO app_settings (id, app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model, language, updated_at)
+     VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
       params![
         bool_to_int(defaults.app_enabled),
         bool_to_int(defaults.capture_enabled),
@@ -118,6 +151,7 @@ impl Database {
         defaults.api_key,
         defaults.search_model,
         defaults.ocr_model,
+                defaults.language,
         now_ts(),
       ],
     )?;
@@ -126,7 +160,7 @@ impl Database {
 
     pub fn get_app_settings(&self) -> Result<AppSettings, AppError> {
         self.conn.query_row(
-      "SELECT app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model FROM app_settings WHERE id = 1",
+    "SELECT app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model, language FROM app_settings WHERE id = 1",
       [],
       |row| Ok(AppSettings {
         app_enabled: int_to_bool(row.get::<_, i64>(0)?),
@@ -140,6 +174,7 @@ impl Database {
         api_key: row.get(8)?,
         search_model: row.get(9)?,
         ocr_model: row.get(10)?,
+                language: row.get(11)?,
       }),
     ).map(|settings| settings.normalized()).map_err(AppError::from)
     }
@@ -147,7 +182,7 @@ impl Database {
     pub fn save_app_settings(&self, settings: AppSettings) -> Result<AppSettings, AppError> {
         let settings = settings.normalized();
         self.conn.execute(
-      "UPDATE app_settings SET app_enabled = ?1, capture_enabled = ?2, intercept_win_v = ?3, run_at_startup = ?4, hide_console_window = ?5, ai_protocol = ?6, openai_base_url = ?7, anthropic_base_url = ?8, api_key = ?9, search_model = ?10, ocr_model = ?11, updated_at = ?12 WHERE id = 1",
+    "UPDATE app_settings SET app_enabled = ?1, capture_enabled = ?2, intercept_win_v = ?3, run_at_startup = ?4, hide_console_window = ?5, ai_protocol = ?6, openai_base_url = ?7, anthropic_base_url = ?8, api_key = ?9, search_model = ?10, ocr_model = ?11, language = ?12, updated_at = ?13 WHERE id = 1",
       params![
         bool_to_int(settings.app_enabled),
         bool_to_int(settings.capture_enabled),
@@ -160,6 +195,7 @@ impl Database {
         settings.api_key,
         settings.search_model,
         settings.ocr_model,
+                settings.language,
         now_ts(),
       ],
     )?;
@@ -169,8 +205,23 @@ impl Database {
     pub fn insert_text_item(
         &mut self,
         text: &str,
-    ) -> Result<(ClipboardItem, Vec<QuickItem>), AppError> {
+    ) -> Result<(ClipboardItem, Vec<QuickSuggestion>), AppError> {
         let now = now_ts();
+        let quick_items = self.observe_text_for_quick_pool(text)?;
+        if let Some(existing) = self.find_recent_duplicate_text_item(text)? {
+            let expires_at = if existing.is_star {
+                None
+            } else {
+                Some(now + RETENTION_SECONDS)
+            };
+            self.conn.execute(
+                "UPDATE items SET created_at = ?2, updated_at = ?2, expires_at = ?3 WHERE id = ?1",
+                params![existing.id, now, expires_at],
+            )?;
+            let item = self.get_item(&existing.id)?.ok_or(AppError::NotFound)?;
+            return Ok((item, quick_items));
+        }
+
         let id = Uuid::new_v4().to_string();
         let preview = make_preview(text);
         self.conn.execute(
@@ -178,7 +229,6 @@ impl Database {
       params![id, text, preview, now, now + RETENTION_SECONDS],
     )?;
         let item = self.get_item(&id)?.ok_or(AppError::NotFound)?;
-        let quick_items = self.observe_text_for_quick_pool(text)?;
         Ok((item, quick_items))
     }
 
@@ -194,6 +244,20 @@ impl Database {
         bytes: &[u8],
     ) -> Result<ClipboardItem, AppError> {
         let now = now_ts();
+        let image_hash = make_image_hash(width, height, bytes);
+        if let Some(existing) = self.find_recent_duplicate_image_item(&image_hash)? {
+            let expires_at = if existing.is_star {
+                None
+            } else {
+                Some(now + RETENTION_SECONDS)
+            };
+            self.conn.execute(
+                "UPDATE items SET created_at = ?2, updated_at = ?2, expires_at = ?3 WHERE id = ?1",
+                params![existing.id, now, expires_at],
+            )?;
+            return self.get_item(&existing.id)?.ok_or(AppError::NotFound);
+        }
+
         let id = Uuid::new_v4().to_string();
         let image_path = self.image_dir.join(format!("{id}.png"));
         let buffer = ImageBuffer::<image::Rgba<u8>, _>::from_raw(
@@ -205,24 +269,67 @@ impl Database {
         buffer.save(&image_path)?;
 
         self.conn.execute(
-      "INSERT INTO items (id, kind, image_path, preview, created_at, updated_at, expires_at, mime_type, width, height) VALUES (?1, 'image', ?2, ?3, ?4, ?4, ?5, 'image/png', ?6, ?7)",
-      params![id, image_path.to_string_lossy(), format!("Image {} x {}", width, height), now, now + RETENTION_SECONDS, width as i64, height as i64],
+            "INSERT INTO items (id, kind, image_path, preview, created_at, updated_at, expires_at, mime_type, width, height, image_hash) VALUES (?1, 'image', ?2, ?3, ?4, ?4, ?5, 'image/png', ?6, ?7, ?8)",
+            params![id, image_path.to_string_lossy(), format!("Image {} x {}", width, height), now, now + RETENTION_SECONDS, width as i64, height as i64, image_hash],
     )?;
         self.get_item(&id)?.ok_or(AppError::NotFound)
     }
 
     pub fn get_history(&self, limit: i64, offset: i64) -> Result<Vec<ClipboardItem>, AppError> {
         let mut statement = self.conn.prepare(
-      "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height
+    "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
        FROM items ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
     )?;
         let rows = statement.query_map(params![limit, offset], row_to_item)?;
         collect_rows(rows)
     }
 
+    fn find_recent_duplicate_text_item(
+        &self,
+        text: &str,
+    ) -> Result<Option<ClipboardItem>, AppError> {
+        let normalized = normalize_text_for_match(text);
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        let mut statement = self.conn.prepare(
+            "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+             FROM items WHERE kind = 'text' ORDER BY created_at DESC LIMIT 20",
+        )?;
+        let rows = statement.query_map([], row_to_item)?;
+        for row in rows {
+            let item = row?;
+            if item
+                .content
+                .as_ref()
+                .map(|content| normalize_text_for_match(content) == normalized)
+                .unwrap_or(false)
+            {
+                return Ok(Some(item));
+            }
+        }
+        Ok(None)
+    }
+
+    fn find_recent_duplicate_image_item(
+        &self,
+        image_hash: &str,
+    ) -> Result<Option<ClipboardItem>, AppError> {
+        self.conn
+            .query_row(
+                "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+                 FROM items WHERE kind = 'image' AND image_hash = ?1 ORDER BY created_at DESC LIMIT 1",
+                params![image_hash],
+                row_to_item,
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
     pub fn get_item(&self, id: &str) -> Result<Option<ClipboardItem>, AppError> {
         self.conn.query_row(
-      "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height FROM items WHERE id = ?1",
+    "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text FROM items WHERE id = ?1",
       params![id],
       row_to_item,
     ).optional().map_err(AppError::from)
@@ -231,9 +338,24 @@ impl Database {
     pub fn update_item_text(&self, id: &str, text: &str) -> Result<ClipboardItem, AppError> {
         let now = now_ts();
         let changed = self.conn.execute(
-      "UPDATE items SET kind = 'text', content = ?2, image_path = NULL, preview = ?3, updated_at = ?4, mime_type = 'text/plain;charset=utf-8', width = NULL, height = NULL WHERE id = ?1",
+            "UPDATE items SET kind = 'text', content = ?2, image_path = NULL, preview = ?3, updated_at = ?4, mime_type = 'text/plain;charset=utf-8', width = NULL, height = NULL, image_hash = NULL, ocr_text = NULL WHERE id = ?1",
       params![id, text, make_preview(text), now],
     )?;
+        if changed == 0 {
+            return Err(AppError::NotFound);
+        }
+        self.get_item(id)?.ok_or(AppError::NotFound)
+    }
+
+    pub fn update_image_ocr_text(&self, id: &str, text: &str) -> Result<ClipboardItem, AppError> {
+        let item = self.get_item(id)?.ok_or(AppError::NotFound)?;
+        if item.kind != "image" {
+            return Err(AppError::Other("record is not an image".to_string()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE items SET ocr_text = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, text, now_ts()],
+        )?;
         if changed == 0 {
             return Err(AppError::NotFound);
         }
@@ -252,8 +374,8 @@ impl Database {
     }
 
     pub fn toggle_star(&self, id: &str, is_star: bool) -> Result<ClipboardItem, AppError> {
-        let item = self.get_item(id)?.ok_or(AppError::NotFound)?;
-        let expires_at = if is_star || item.folder_id.is_some() {
+        let _item = self.get_item(id)?.ok_or(AppError::NotFound)?;
+        let expires_at = if is_star {
             None
         } else {
             Some(now_ts() + RETENTION_SECONDS)
@@ -293,6 +415,21 @@ impl Database {
         })
     }
 
+    pub fn delete_folder(&self, id: &str) -> Result<(), AppError> {
+        let now = now_ts();
+        self.conn.execute(
+            "UPDATE items SET folder_id = NULL, expires_at = CASE WHEN is_star = 1 THEN NULL WHEN expires_at IS NULL THEN ?2 ELSE expires_at END, updated_at = ?3 WHERE folder_id = ?1",
+            params![id, now + RETENTION_SECONDS, now],
+        )?;
+        let changed = self
+            .conn
+            .execute("DELETE FROM folders WHERE id = ?1", params![id])?;
+        if changed == 0 {
+            return Err(AppError::NotFound);
+        }
+        Ok(())
+    }
+
     pub fn get_or_create_folder(&self, name: &str) -> Result<Folder, AppError> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
@@ -326,10 +463,10 @@ impl Database {
         folder_id: Option<String>,
     ) -> Result<ClipboardItem, AppError> {
         let item = self.get_item(item_id)?.ok_or(AppError::NotFound)?;
-        let expires_at = if folder_id.is_some() || item.is_star {
+        let expires_at = if item.is_star {
             None
         } else {
-            Some(now_ts() + RETENTION_SECONDS)
+            item.expires_at.or(Some(now_ts() + RETENTION_SECONDS))
         };
         self.conn.execute(
             "UPDATE items SET folder_id = ?2, expires_at = ?3, updated_at = ?4 WHERE id = ?1",
@@ -344,6 +481,15 @@ impl Database {
       "SELECT id, content, hit_count, created_at, updated_at, expires_at, is_pinned FROM quick_items ORDER BY is_pinned DESC, updated_at DESC",
     )?;
         let rows = statement.query_map([], row_to_quick_item)?;
+        collect_rows(rows)
+    }
+
+    pub fn get_quick_suggestions(&self) -> Result<Vec<QuickSuggestion>, AppError> {
+        self.cleanup_quick_pool()?;
+        let mut statement = self.conn.prepare(
+            "SELECT id, content, hit_count, created_at, updated_at FROM quick_suggestions ORDER BY updated_at DESC",
+        )?;
+        let rows = statement.query_map([], row_to_quick_suggestion)?;
         collect_rows(rows)
     }
 
@@ -373,11 +519,112 @@ impl Database {
     ).map_err(AppError::from)
     }
 
+    pub fn accept_quick_suggestion(&self, id: &str, ttl: i64) -> Result<QuickItem, AppError> {
+        let suggestion = self.conn.query_row(
+            "SELECT id, content, hit_count, created_at, updated_at FROM quick_suggestions WHERE id = ?1",
+            params![id],
+            row_to_quick_suggestion,
+        ).optional()?.ok_or(AppError::NotFound)?;
+
+        let quick_item = if let Some(existing) =
+            self.find_quick_item_by_content(&suggestion.content)?
+        {
+            let now = now_ts();
+            let expires_at = if ttl <= 0 { None } else { Some(now + ttl) };
+            let is_pinned = ttl <= 0;
+            self.conn.execute(
+                "UPDATE quick_items SET hit_count = MAX(hit_count, ?2), updated_at = ?3, expires_at = ?4, is_pinned = ?5 WHERE id = ?1",
+                params![existing.id, suggestion.hit_count, now, expires_at, bool_to_int(is_pinned)],
+            )?;
+            self.conn.query_row(
+                "SELECT id, content, hit_count, created_at, updated_at, expires_at, is_pinned FROM quick_items WHERE id = ?1",
+                params![existing.id],
+                row_to_quick_item,
+            )?
+        } else {
+            self.insert_quick_item(&suggestion.content, suggestion.hit_count, ttl)?
+        };
+
+        self.conn
+            .execute("DELETE FROM quick_suggestions WHERE id = ?1", params![id])?;
+        Ok(quick_item)
+    }
+
+    pub fn dismiss_quick_suggestion(&self, id: &str) -> Result<(), AppError> {
+        let content = self
+            .conn
+            .query_row(
+                "SELECT content FROM quick_suggestions WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        self.conn
+            .execute("DELETE FROM quick_suggestions WHERE id = ?1", params![id])?;
+        if let Some(content) = content {
+            self.conn.execute(
+                "DELETE FROM quick_phrase_hits WHERE phrase = ?1",
+                params![content],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_quick_item(&self, id: &str) -> Result<(), AppError> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM quick_items WHERE id = ?1", params![id])?;
+        if changed == 0 {
+            return Err(AppError::NotFound);
+        }
+        Ok(())
+    }
+
+    pub fn star_quick_item(&self, id: &str) -> Result<ClipboardItem, AppError> {
+        let quick_item = self
+            .conn
+            .query_row(
+                "SELECT id, content, hit_count, created_at, updated_at, expires_at, is_pinned FROM quick_items WHERE id = ?1",
+                params![id],
+                row_to_quick_item,
+            )
+            .optional()?
+            .ok_or(AppError::NotFound)?;
+
+        let now = now_ts();
+        let starred = if let Some(existing) = self.find_text_item_by_content(&quick_item.content)? {
+            self.conn.execute(
+                "UPDATE items SET is_star = 1, expires_at = NULL, updated_at = ?2 WHERE id = ?1",
+                params![existing.id, now],
+            )?;
+            self.get_item(&existing.id)?.ok_or(AppError::NotFound)?
+        } else {
+            let item_id = Uuid::new_v4().to_string();
+            self.conn.execute(
+                "INSERT INTO items (id, kind, content, preview, is_star, created_at, updated_at, expires_at, mime_type) VALUES (?1, 'text', ?2, ?3, 1, ?4, ?4, NULL, 'text/plain;charset=utf-8')",
+                params![item_id, quick_item.content, make_preview(&quick_item.content), now],
+            )?;
+            self.get_item(&item_id)?.ok_or(AppError::NotFound)?
+        };
+
+        self.conn
+            .execute("DELETE FROM quick_items WHERE id = ?1", params![id])?;
+        self.conn.execute(
+            "DELETE FROM quick_suggestions WHERE content = ?1",
+            params![quick_item.content],
+        )?;
+        self.conn.execute(
+            "DELETE FROM quick_phrase_hits WHERE phrase = ?1",
+            params![quick_item.content],
+        )?;
+        Ok(starred)
+    }
+
     pub fn search_local(&self, keyword: &str) -> Result<Vec<ClipboardItem>, AppError> {
         let like = format!("%{}%", keyword.trim());
         let mut statement = self.conn.prepare(
-      "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height
-       FROM items WHERE preview LIKE ?1 OR content LIKE ?1 ORDER BY created_at DESC LIMIT 300",
+    "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+             FROM items WHERE preview LIKE ?1 OR content LIKE ?1 OR ocr_text LIKE ?1 ORDER BY created_at DESC LIMIT 300",
     )?;
         let rows = statement.query_map(params![like], row_to_item)?;
         collect_rows(rows)
@@ -385,7 +632,7 @@ impl Database {
 
     pub fn recent_uncategorized(&self, limit: i64) -> Result<Vec<ClipboardItem>, AppError> {
         let mut statement = self.conn.prepare(
-      "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height
+    "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
        FROM items WHERE folder_id IS NULL ORDER BY created_at DESC LIMIT ?1",
     )?;
         let rows = statement.query_map(params![limit], row_to_item)?;
@@ -396,7 +643,7 @@ impl Database {
         let now = now_ts();
         let expired = self.expired_image_paths(now)?;
         self.conn.execute(
-      "DELETE FROM items WHERE is_star = 0 AND folder_id IS NULL AND (created_at < ?1 OR (expires_at IS NOT NULL AND expires_at <= ?2))",
+    "DELETE FROM items WHERE is_star = 0 AND (created_at < ?1 OR (expires_at IS NOT NULL AND expires_at <= ?2))",
       params![now - RETENTION_SECONDS, now],
     )?;
         for path in expired {
@@ -412,10 +659,17 @@ impl Database {
 
     fn cleanup_quick_pool(&self) -> Result<(), AppError> {
         self.conn.execute("DELETE FROM quick_items WHERE is_pinned = 0 AND expires_at IS NOT NULL AND expires_at <= ?1", params![now_ts()])?;
+        self.conn.execute(
+            "DELETE FROM quick_suggestions WHERE updated_at <= ?1",
+            params![now_ts() - QUICK_SUGGESTION_SECONDS],
+        )?;
         Ok(())
     }
 
-    fn observe_text_for_quick_pool(&self, text: &str) -> Result<Vec<QuickItem>, AppError> {
+    pub fn observe_text_for_quick_pool(
+        &self,
+        text: &str,
+    ) -> Result<Vec<QuickSuggestion>, AppError> {
         let now = now_ts();
         let mut extracted = Vec::new();
         for phrase in extract_candidates(text) {
@@ -444,32 +698,101 @@ impl Database {
         params![phrase, first_seen, now, hit_count],
       )?;
 
-            if hit_count >= QUICK_THRESHOLD && !self.quick_item_exists(&phrase)? {
-                let item = self.insert_quick_item(&phrase, hit_count)?;
-                extracted.push(item);
+            if hit_count >= QUICK_THRESHOLD {
+                if let Some(existing_item) = self.find_quick_item_by_content(&phrase)? {
+                    self.conn.execute(
+                        "UPDATE quick_items SET hit_count = MAX(hit_count, ?2), updated_at = ?3 WHERE id = ?1",
+                        params![existing_item.id, hit_count, now],
+                    )?;
+                } else if let Some(existing_suggestion) =
+                    self.find_quick_suggestion_by_content(&phrase)?
+                {
+                    self.conn.execute(
+                        "UPDATE quick_suggestions SET hit_count = MAX(hit_count, ?2), updated_at = ?3 WHERE id = ?1",
+                        params![existing_suggestion.id, hit_count, now],
+                    )?;
+                } else {
+                    let suggestion = self.insert_quick_suggestion(&phrase, hit_count)?;
+                    extracted.push(suggestion);
+                }
             }
         }
         Ok(extracted)
     }
 
-    fn quick_item_exists(&self, content: &str) -> Result<bool, AppError> {
-        let exists: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM quick_items WHERE content = ?1",
-                params![content],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(exists.is_some())
+    fn find_quick_item_by_content(&self, content: &str) -> Result<Option<QuickItem>, AppError> {
+        self.conn.query_row(
+            "SELECT id, content, hit_count, created_at, updated_at, expires_at, is_pinned FROM quick_items WHERE content = ?1",
+            params![content],
+            row_to_quick_item,
+        ).optional().map_err(AppError::from)
     }
 
-    fn insert_quick_item(&self, content: &str, hit_count: i64) -> Result<QuickItem, AppError> {
+    fn find_quick_suggestion_by_content(
+        &self,
+        content: &str,
+    ) -> Result<Option<QuickSuggestion>, AppError> {
+        self.conn.query_row(
+            "SELECT id, content, hit_count, created_at, updated_at FROM quick_suggestions WHERE content = ?1",
+            params![content],
+            row_to_quick_suggestion,
+        ).optional().map_err(AppError::from)
+    }
+
+    fn find_text_item_by_content(&self, content: &str) -> Result<Option<ClipboardItem>, AppError> {
+        if let Some(item) = self
+            .conn
+            .query_row(
+                "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+                 FROM items WHERE kind = 'text' AND content = ?1 ORDER BY created_at DESC LIMIT 1",
+                params![content],
+                row_to_item,
+            )
+            .optional()?
+        {
+            return Ok(Some(item));
+        }
+
+        let normalized = normalize_text_for_match(content);
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        let mut statement = self.conn.prepare(
+            "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+             FROM items WHERE kind = 'text' ORDER BY created_at DESC LIMIT 500",
+        )?;
+        let rows = statement.query_map([], row_to_item)?;
+        for row in rows {
+            let item = row?;
+            if item
+                .content
+                .as_ref()
+                .map(|value| normalize_text_for_match(value) == normalized)
+                .unwrap_or(false)
+            {
+                return Ok(Some(item));
+            }
+        }
+        Ok(None)
+    }
+
+    fn insert_quick_item(
+        &self,
+        content: &str,
+        hit_count: i64,
+        ttl: i64,
+    ) -> Result<QuickItem, AppError> {
         let id = Uuid::new_v4().to_string();
         let now = now_ts();
+        let (expires_at, is_pinned) = if ttl <= 0 {
+            (None, true)
+        } else {
+            (Some(now + ttl), false)
+        };
         self.conn.execute(
-      "INSERT INTO quick_items (id, content, hit_count, created_at, updated_at, expires_at, is_pinned) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0)",
-      params![id, content, hit_count, now, now + QUICK_POOL_SECONDS],
+            "INSERT INTO quick_items (id, content, hit_count, created_at, updated_at, expires_at, is_pinned) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
+            params![id, content, hit_count, now, expires_at, bool_to_int(is_pinned)],
     )?;
         Ok(QuickItem {
             id,
@@ -477,14 +800,34 @@ impl Database {
             hit_count,
             created_at: now,
             updated_at: now,
-            expires_at: Some(now + QUICK_POOL_SECONDS),
-            is_pinned: false,
+            expires_at,
+            is_pinned,
+        })
+    }
+
+    fn insert_quick_suggestion(
+        &self,
+        content: &str,
+        hit_count: i64,
+    ) -> Result<QuickSuggestion, AppError> {
+        let id = Uuid::new_v4().to_string();
+        let now = now_ts();
+        self.conn.execute(
+            "INSERT INTO quick_suggestions (id, content, hit_count, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, content, hit_count, now],
+        )?;
+        Ok(QuickSuggestion {
+            id,
+            content: content.to_string(),
+            hit_count,
+            created_at: now,
+            updated_at: now,
         })
     }
 
     fn expired_image_paths(&self, now: i64) -> Result<Vec<String>, AppError> {
         let mut statement = self.conn.prepare(
-      "SELECT image_path FROM items WHERE kind = 'image' AND image_path IS NOT NULL AND is_star = 0 AND folder_id IS NULL AND (created_at < ?1 OR (expires_at IS NOT NULL AND expires_at <= ?2))",
+    "SELECT image_path FROM items WHERE kind = 'image' AND image_path IS NOT NULL AND is_star = 0 AND (created_at < ?1 OR (expires_at IS NOT NULL AND expires_at <= ?2))",
     )?;
         let rows = statement.query_map(params![now - RETENTION_SECONDS, now], |row| {
             row.get::<_, String>(0)
@@ -508,6 +851,8 @@ fn row_to_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
         mime_type: row.get(10)?,
         width: row.get(11)?,
         height: row.get(12)?,
+        image_hash: row.get(13)?,
+        ocr_text: row.get(14)?,
     })
 }
 
@@ -523,6 +868,16 @@ fn row_to_quick_item(row: &Row<'_>) -> rusqlite::Result<QuickItem> {
     })
 }
 
+fn row_to_quick_suggestion(row: &Row<'_>) -> rusqlite::Result<QuickSuggestion> {
+    Ok(QuickSuggestion {
+        id: row.get(0)?,
+        content: row.get(1)?,
+        hit_count: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
 fn collect_rows<T>(
     rows: rusqlite::MappedRows<'_, impl FnMut(&Row<'_>) -> rusqlite::Result<T>>,
 ) -> Result<Vec<T>, AppError> {
@@ -534,7 +889,7 @@ fn collect_rows<T>(
 }
 
 fn make_preview(text: &str) -> String {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = normalize_text_for_match(text);
     let mut preview: String = normalized.chars().take(180).collect();
     if normalized.chars().count() > 180 {
         preview.push_str("...");
@@ -544,6 +899,25 @@ fn make_preview(text: &str) -> String {
     } else {
         preview
     }
+}
+
+fn normalize_text_for_match(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn make_image_hash(width: usize, height: usize, bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    let width_bytes = (width as u64).to_le_bytes();
+    let height_bytes = (height as u64).to_le_bytes();
+    for byte in width_bytes
+        .iter()
+        .chain(height_bytes.iter())
+        .chain(bytes.iter())
+    {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn bool_to_int(value: bool) -> i64 {
@@ -586,10 +960,165 @@ impl From<AppError> for String {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{now_ts, Database};
+    use rusqlite::params;
 
     #[test]
-    fn quick_pool_extracts_after_five_repeated_copies() {
+    fn quick_pool_extracts_after_five_exact_repeated_copies() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        let phrase = "reusable phrase longer than ten";
+        let mut extracted = Vec::new();
+        for _ in 0..5 {
+            let (_, quick_items) = db.insert_text_item(phrase).unwrap();
+            extracted.extend(quick_items);
+        }
+
+        assert!(extracted.iter().any(|item| item.content == phrase));
+        assert_eq!(db.get_history(10, 0).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn repeated_text_reuses_recent_history_item() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        let (first, _) = db.insert_text_item("duplicate clipboard text").unwrap();
+        let (second, _) = db.insert_text_item(" duplicate   clipboard text ").unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(db.get_history(10, 0).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn repeated_image_reuses_recent_history_item() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        let bytes = [255, 0, 0, 255];
+        let first = db.insert_image_item(1, 1, &bytes).unwrap();
+        let second = db.insert_image_item(1, 1, &bytes).unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(db.get_history(10, 0).unwrap().len(), 1);
+        assert!(second.image_hash.is_some());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn quick_item_star_moves_to_starred_history() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        let content = "favorite quick text";
+        for _ in 0..5 {
+            let _ = db.insert_text_item(content).unwrap();
+        }
+        let suggestion = db.get_quick_suggestions().unwrap().pop().unwrap();
+        let quick_item = db
+            .accept_quick_suggestion(&suggestion.id, 24 * 60 * 60)
+            .unwrap();
+
+        let starred = db.star_quick_item(&quick_item.id).unwrap();
+
+        assert!(starred.is_star);
+        assert_eq!(starred.content.as_deref(), Some(content));
+        assert!(starred.expires_at.is_none());
+        assert!(db.get_quick_pool().unwrap().is_empty());
+        assert!(db.get_quick_suggestions().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn deleting_folder_moves_records_back_to_history() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        let folder = db.create_folder("Projects").unwrap();
+        let (item, _) = db.insert_text_item("foldered clipboard text").unwrap();
+        let moved = db
+            .move_to_folder(&item.id, Some(folder.id.clone()))
+            .unwrap();
+        assert_eq!(moved.folder_id.as_deref(), Some(folder.id.as_str()));
+        assert!(moved.expires_at.is_some());
+
+        db.delete_folder(&folder.id).unwrap();
+        let restored = db.get_item(&item.id).unwrap().unwrap();
+
+        assert!(restored.folder_id.is_none());
+        assert!(restored.expires_at.is_some());
+        assert!(db.get_folders().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn foldered_non_starred_records_still_expire() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        let folder = db.create_folder("Archive").unwrap();
+        let (item, _) = db.insert_text_item("old foldered clipboard text").unwrap();
+        db.move_to_folder(&item.id, Some(folder.id)).unwrap();
+        db.conn
+            .execute(
+                "UPDATE items SET expires_at = ?2 WHERE id = ?1",
+                params![item.id, now_ts() - 1],
+            )
+            .unwrap();
+
+        db.cleanup_retention().unwrap();
+
+        assert!(db.get_item(&item.id).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn pending_quick_suggestions_expire_after_five_hours() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        for _ in 0..5 {
+            let _ = db.insert_text_item("temporary candidate text").unwrap();
+        }
+        assert_eq!(db.get_quick_suggestions().unwrap().len(), 1);
+
+        db.conn
+            .execute(
+                "UPDATE quick_suggestions SET updated_at = ?1",
+                params![now_ts() - (5 * 60 * 60) - 1],
+            )
+            .unwrap();
+
+        assert!(db.get_quick_suggestions().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn quick_pool_ignores_reused_inner_phrase_with_different_full_text() {
         let temp =
             std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
         let db_path = temp.join("test.sqlite");
@@ -605,7 +1134,7 @@ mod tests {
             extracted.extend(quick_items);
         }
 
-        assert!(extracted.iter().any(|item| item.content.contains(phrase)));
+        assert!(extracted.is_empty());
         let _ = std::fs::remove_dir_all(temp);
     }
 }

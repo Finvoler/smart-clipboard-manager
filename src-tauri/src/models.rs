@@ -16,6 +16,8 @@ pub struct ClipboardItem {
     pub mime_type: Option<String>,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    pub image_hash: Option<String>,
+    pub ocr_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,16 @@ pub struct QuickItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct QuickSuggestion {
+    pub id: String,
+    pub content: String,
+    pub hit_count: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub app_enabled: bool,
     pub capture_enabled: bool,
@@ -52,6 +64,7 @@ pub struct AppSettings {
     pub api_key: String,
     pub search_model: String,
     pub ocr_model: String,
+    pub language: String,
 }
 
 impl Default for AppSettings {
@@ -68,12 +81,14 @@ impl Default for AppSettings {
             api_key: String::new(),
             search_model: "mimo-v2.5-pro".to_string(),
             ocr_model: "mimo-v2.5".to_string(),
+            language: "zh".to_string(),
         }
     }
 }
 
 impl AppSettings {
     pub fn normalized(mut self) -> Self {
+        self.app_enabled = true;
         if self.ai_protocol != "anthropic" {
             self.ai_protocol = "openai".to_string();
         }
@@ -90,6 +105,10 @@ impl AppSettings {
         self.api_key = self.api_key.trim().to_string();
         self.search_model = self.search_model.trim().to_string();
         self.ocr_model = self.ocr_model.trim().to_string();
+        self.language = match self.language.trim().to_ascii_lowercase().as_str() {
+            "en" | "english" => "en".to_string(),
+            _ => "zh".to_string(),
+        };
 
         if self.openai_base_url == "https://token-plan-cn.xiaomimimo.com/v1" {
             self.openai_base_url = "https://api.xiaomimimo.com/v1".to_string();
@@ -119,7 +138,9 @@ impl AppSettings {
 
 fn normalize_model_name(model: &str) -> String {
     match model.trim().to_ascii_lowercase().as_str() {
-        "mimo2.5pro" | "mimo-v2.5pro" | "mimo-v25-pro" | "mimo-v2-5-pro" => "mimo-v2.5-pro".to_string(),
+        "mimo2.5pro" | "mimo-v2.5pro" | "mimo-v25-pro" | "mimo-v2-5-pro" => {
+            "mimo-v2.5-pro".to_string()
+        }
         "mimo2.5" | "mimo-v25" | "mimo-v2-5" => "mimo-v2.5".to_string(),
         value => value.to_string(),
     }

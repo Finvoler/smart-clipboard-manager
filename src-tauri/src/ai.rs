@@ -3,7 +3,7 @@ use std::fs;
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 
-use crate::models::{AppSettings, CategoryAssignment, ClipboardItem};
+use crate::models::{AppSettings, CategoryAssignment, ClipboardItem, Folder};
 
 const KNOWN_MIMO_MODELS: [&str; 9] = [
     "mimo-v2.5-pro",
@@ -54,7 +54,11 @@ pub async fn list_models(settings: &AppSettings) -> Result<Vec<String>, String> 
         .and_then(|data| data.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|item| item.get("id").and_then(|id| id.as_str()).map(ToString::to_string))
+        .filter_map(|item| {
+            item.get("id")
+                .and_then(|id| id.as_str())
+                .map(ToString::to_string)
+        })
         .collect::<Vec<_>>();
     if models.is_empty() {
         models.extend(KNOWN_MIMO_MODELS.iter().map(|model| model.to_string()));
@@ -65,7 +69,10 @@ pub async fn list_models(settings: &AppSettings) -> Result<Vec<String>, String> 
 }
 
 pub fn known_models() -> Vec<String> {
-    KNOWN_MIMO_MODELS.iter().map(|model| model.to_string()).collect()
+    KNOWN_MIMO_MODELS
+        .iter()
+        .map(|model| model.to_string())
+        .collect()
 }
 
 pub async fn semantic_search(
@@ -75,16 +82,20 @@ pub async fn semantic_search(
 ) -> Result<Vec<String>, String> {
     if std::env::var("SMART_CLIPBOARD_MOCK_AI").ok().as_deref() == Some("1") {
         let keyword = query.to_lowercase();
+        let wants_web = ["网页", "网站", "链接", "网址", "url", "http", "www"]
+            .iter()
+            .any(|needle| keyword.contains(needle));
         return Ok(records
             .into_iter()
             .filter(|item| {
-                format!(
+                let haystack = format!(
                     "{} {}",
                     item.preview,
                     item.content.clone().unwrap_or_default()
                 )
-                .to_lowercase()
-                .contains(&keyword)
+                .to_lowercase();
+                haystack.contains(&keyword)
+                    || (wants_web && (haystack.contains("http") || haystack.contains("www.")))
             })
             .map(|item| item.id)
             .collect());
@@ -92,23 +103,31 @@ pub async fn semantic_search(
 
     let settings = settings.clone().normalized();
     ensure_ai_ready(&settings, false)?;
+    let now = crate::db::now_ts();
     let payload = records
         .iter()
         .map(|item| {
+            let age_seconds = now.saturating_sub(item.created_at);
             serde_json::json!({
               "id": item.id,
               "kind": item.kind,
-              "text": item.content.clone().unwrap_or_else(|| item.preview.clone())
+                            "createdAtUnix": item.created_at,
+                            "updatedAtUnix": item.updated_at,
+                            "ageSeconds": age_seconds,
+                            "ageMinutes": age_seconds / 60,
+                            "ageHours": age_seconds / 3600,
+                            "ageText": human_age(age_seconds),
+                            "text": item.content.clone().or_else(|| item.ocr_text.clone()).unwrap_or_else(|| item.preview.clone())
             })
         })
         .collect::<Vec<_>>();
 
     let content = complete_text(
-    &settings,
-    &settings.search_model,
-    "You are a local clipboard semantic search ranker. Return compact JSON only, with the shape {\"ids\":[\"item-id\"]}. Include only records that semantically answer the query.",
-    &format!("Query: {query}\nRecords JSON: {}", Value::Array(payload)),
-  ).await?;
+        &settings,
+        &settings.search_model,
+        "You are a permissive local clipboard search assistant. Return compact JSON only with the exact shape {\"ids\":[\"item-id\"]}. Your job is to find clipboard records that are useful for the user's short, fuzzy query. Use broad semantic intent, synonyms, abbreviations, likely entities, and contextual inference. The user may ask relative-time questions such as 刚刚/几分钟前/几小时前/昨天/前几天; never guess from your training date. Use currentUnixSeconds plus each record's createdAtUnix, ageSeconds, ageMinutes, ageHours, and ageText to judge time accurately. If the query asks for webpages, websites, links, URLs, or says words like 网页/网站/链接/网址/url/http/www, include records containing http, https, www, domains, or URL-like text even if the query word is not literally present. If the query is vague, such as 什么药/药名/那个药, infer likely medicine or drug names from the records and include plausible matches. Include exact keyword matches, fuzzy semantic matches, inferred relevant records, and time-relevant records. Do not invent ids. Do not explain. Prefer recall over strictness, but exclude clearly unrelated records.",
+        &format!("currentUnixSeconds: {now}\nUser query: {query}\nClipboard records JSON: {}", Value::Array(payload)),
+    ).await?;
     let value = parse_json_content(&content)?;
     let ids = value
         .get("ids")
@@ -120,16 +139,34 @@ pub async fn semantic_search(
         .collect())
 }
 
+fn human_age(seconds: i64) -> String {
+    if seconds < 60 {
+        return "刚刚".to_string();
+    }
+    if seconds < 60 * 60 {
+        return format!("{} 分钟前", seconds / 60);
+    }
+    if seconds < 24 * 60 * 60 {
+        return format!("{} 小时前", seconds / 3600);
+    }
+    format!("{} 天前", seconds / (24 * 60 * 60))
+}
+
 pub async fn categorize(
     settings: &AppSettings,
     records: Vec<ClipboardItem>,
+    existing_folders: Vec<Folder>,
 ) -> Result<Vec<CategoryAssignment>, String> {
     if std::env::var("SMART_CLIPBOARD_MOCK_AI").ok().as_deref() == Some("1") {
+        let folder_name = existing_folders
+            .first()
+            .map(|folder| folder.name.clone())
+            .unwrap_or_else(|| "AI Archive".to_string());
         return Ok(records
             .into_iter()
             .map(|item| CategoryAssignment {
                 item_id: item.id,
-                folder_name: "AI Archive".to_string(),
+                folder_name: folder_name.clone(),
             })
             .collect());
     }
@@ -141,7 +178,16 @@ pub async fn categorize(
         .map(|item| {
             serde_json::json!({
               "id": item.id,
-              "text": item.content.clone().unwrap_or_else(|| item.preview.clone())
+                            "text": item.content.clone().or_else(|| item.ocr_text.clone()).unwrap_or_else(|| item.preview.clone())
+            })
+        })
+        .collect::<Vec<_>>();
+    let folder_payload = existing_folders
+        .iter()
+        .map(|folder| {
+            serde_json::json!({
+              "id": folder.id,
+              "name": folder.name
             })
         })
         .collect::<Vec<_>>();
@@ -149,8 +195,8 @@ pub async fn categorize(
     let content = complete_text(
     &settings,
     &settings.search_model,
-    "You organize clipboard history. Return compact JSON only, with the shape {\"assignments\":[{\"id\":\"item-id\",\"folder\":\"short folder name\"}]}. Use practical folder names, skip unclear records.",
-    &format!("Uncategorized clipboard records JSON: {}", Value::Array(payload)),
+        "You organize clipboard history. Return compact JSON only, with the shape {\"assignments\":[{\"id\":\"item-id\",\"folder\":\"short folder name\"}]}. Prefer existing folders whenever a reasonable match exists; use the exact existing folder name in that case. Create new folders only for broad reusable categories that fit multiple records. Minimize the number of new folders, avoid one-record niche folders, and group related ambiguous records into a small general folder instead of creating many tiny folders. Skip unclear records only when no existing or broad new folder is appropriate. For newly created folder names, use the requested UI language: Chinese for zh and English for en. Existing folder names must remain unchanged.",
+        &format!("Requested folder language: {}\nExisting folders JSON: {}\nUncategorized clipboard records JSON: {}", settings.language, Value::Array(folder_payload), Value::Array(payload)),
   ).await?;
     let value = parse_json_content(&content)?;
     let assignments = value
