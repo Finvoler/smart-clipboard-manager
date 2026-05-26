@@ -1007,6 +1007,12 @@ function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, 
         {copy.ocrModel}
         <input list="mimo-models" value={settings.ocrModel} disabled={busy} onChange={(event) => onChange({ ocrModel: event.target.value })} />
       </label>
+      <div className="settingsActions">
+        <button onClick={onSave} disabled={busy}><Save size={14} /> {copy.save}</button>
+        <button onClick={onTest} disabled={busy}><TestTube2 size={14} /> {copy.test}</button>
+        <button onClick={onRefreshModels} disabled={busy}><RefreshCw size={14} /> {copy.models}</button>
+      </div>
+
       <label className="fieldLabel">
         {copy.dataDirectory}
         <div className="pathPickerRow">
@@ -1024,12 +1030,6 @@ function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, 
         <div className="fieldHelp">{copy.dataDirectoryHelp}</div>
         <div className="fieldHelp">{copy.currentDataDirectory}: {settings.resolvedDataDirectory}</div>
       </label>
-
-      <div className="settingsActions">
-        <button onClick={onSave} disabled={busy}><Save size={14} /> {copy.save}</button>
-        <button onClick={onTest} disabled={busy}><TestTube2 size={14} /> {copy.test}</button>
-        <button onClick={onRefreshModels} disabled={busy}><RefreshCw size={14} /> {copy.models}</button>
-      </div>
       {status ? <div className="settingsStatus">{status}</div> : null}
     </div>
   );
