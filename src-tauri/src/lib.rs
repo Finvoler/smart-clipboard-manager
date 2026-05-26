@@ -212,10 +212,15 @@ fn restart_app(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
 
 fn spawn_replacement_process(reason: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    Command::new(exe)
-        .env("SMART_CLIPBOARD_RESTART_REASON", reason)
-        .env("SMART_CLIPBOARD_RESTARTED", "1")
-        .spawn()
+    let mut cmd = Command::new(exe);
+    cmd.env("SMART_CLIPBOARD_RESTART_REASON", reason)
+        .env("SMART_CLIPBOARD_RESTARTED", "1");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000 /* CREATE_NO_WINDOW */);
+    }
+    cmd.spawn()
         .map(|_| ())
         .map_err(|error| error.to_string())
 }

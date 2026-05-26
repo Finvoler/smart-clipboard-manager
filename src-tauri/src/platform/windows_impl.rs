@@ -41,7 +41,7 @@ use windows::{
                 GetWindowRect, GetWindowThreadProcessId, IsIconic, PostQuitMessage, RegisterClassW,
                 SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CS_HREDRAW,
                 CS_VREDRAW, GUITHREADINFO, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
-                MSG, SW_HIDE, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, WH_KEYBOARD_LL,
+                MSG, SW_HIDE, SW_RESTORE, SW_SHOWNORMAL, WH_KEYBOARD_LL,
                 WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_KEYDOWN,
                 WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
             },
@@ -106,33 +106,14 @@ pub fn start_system_integrations(app: AppHandle, state: &AppState) {
 }
 
 pub fn set_run_at_startup(_app: &AppHandle, enable: bool) -> Result<(), String> {
+    // Always remove any legacy registry Run value left by older builds.
+    let _ = remove_startup_registry_value();
     if enable {
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        match ensure_startup_shortcut(&exe) {
-            Ok(()) => {
-                let _ = remove_startup_registry_value();
-                return Ok(());
-            }
-            Err(shortcut_error) => {
-                ensure_startup_registry_value(&exe).map_err(|registry_error| {
-                    format!(
-                        "startup shortcut failed: {shortcut_error}; registry fallback failed: {registry_error}"
-                    )
-                })?;
-            }
-        }
+        ensure_startup_shortcut(&exe)
     } else {
-        let shortcut_result = remove_startup_shortcut();
-        let registry_result = remove_startup_registry_value();
-        if shortcut_result.is_err() && registry_result.is_err() {
-            return Err(format!(
-                "failed to remove startup shortcut: {}; failed to remove registry startup: {}",
-                shortcut_result.unwrap_err(),
-                registry_result.unwrap_err()
-            ));
-        }
+        remove_startup_shortcut()
     }
-    Ok(())
 }
 
 fn startup_shortcut_path() -> Result<PathBuf, String> {
@@ -166,20 +147,6 @@ fn remove_startup_shortcut() -> Result<(), String> {
     }
 }
 
-fn ensure_startup_registry_value(exe: &Path) -> Result<(), String> {
-    let run_key = startup_registry_key()?;
-    let desired = format!("\"{}\" {STARTUP_ARG}", exe.display());
-    if run_key
-        .get_value::<String, _>(STARTUP_VALUE_NAME)
-        .is_ok_and(|current| current == desired)
-    {
-        return Ok(());
-    }
-    run_key
-        .set_value(STARTUP_VALUE_NAME, &desired)
-        .map_err(|error| error.to_string())
-}
-
 fn remove_startup_registry_value() -> Result<(), String> {
     let run_key = startup_registry_key()?;
     match run_key.delete_value(STARTUP_VALUE_NAME) {
@@ -208,7 +175,7 @@ fn create_startup_shortcut(exe: &Path, shortcut_path: &Path) -> Result<(), Strin
             }
             link.SetDescription(&HSTRING::from("Smart Clipboard Manager"))?;
             link.SetIconLocation(&HSTRING::from(exe.to_string_lossy().as_ref()), 0)?;
-            link.SetShowCmd(SW_SHOWMINNOACTIVE)?;
+            link.SetShowCmd(SW_HIDE)?;
             let persist_file: IPersistFile = link.cast()?;
             persist_file.Save(
                 &HSTRING::from(shortcut_path.to_string_lossy().as_ref()),
