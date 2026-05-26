@@ -47,7 +47,9 @@ const COPY = {
     currentDataDirectory: '当前实际数据目录',
     chooseFolder: '选择文件夹',
     useDefaultPath: '恢复默认',
-    dataDirectoryHelp: '数据库、图片缓存和后续数据文件都会保存在这里。可选择文件夹或手动输入路径，保存后会自动重启并迁移现有数据。',
+    dataDirectoryApply: '保存路径并重启',
+    dataDirectoryPending: (target: string) => `待切换到: ${target}`,
+    dataDirectoryHelp: '数据库、图片缓存和后续数据文件都会保存在这里。选择或输入路径后，点击“保存路径并重启”才会迁移并生效。',
     dataDirectoryConfirm: (target: string) => `确认把数据迁移到「${target}」？应用会自动重启。`,
     dataDirectoryRestarting: '正在切换数据目录并重启...',
     loadedModels: (count: number) => `已加载 ${count} 个模型`,
@@ -129,7 +131,9 @@ const COPY = {
     currentDataDirectory: 'Current active data directory',
     chooseFolder: 'Choose folder',
     useDefaultPath: 'Use default',
-    dataDirectoryHelp: 'The database, image cache, and future data files will be stored here. Choose a folder or type a path, then save to restart and migrate existing data.',
+    dataDirectoryApply: 'Save path and restart',
+    dataDirectoryPending: (target: string) => `Pending target: ${target}`,
+    dataDirectoryHelp: 'The database, image cache, and future data files will be stored here. Choose a folder or type a path, then click Save path and restart to migrate and apply it.',
     dataDirectoryConfirm: (target: string) => `Move existing data to "${target}" and restart the app?`,
     dataDirectoryRestarting: 'Switching data directory and restarting...',
     loadedModels: (count: number) => `Loaded ${count} models`,
@@ -872,6 +876,7 @@ export function App() {
               modelOptions={modelOptions}
               copy={copy}
               busy={settingsBusy}
+              dataDirectoryDirty={hasPendingDataDirectoryChange(settings)}
               onChange={updateSettings}
               onSave={() => void saveSettings()}
               onTest={() => void testAiConnection()}
@@ -947,7 +952,9 @@ function QuickSuggestionRow({ item, copy, pending, onAccept, onDismiss }: { item
   );
 }
 
-function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, onSave, onTest, onRefreshModels, onPasteKey, onChooseDataDirectory, onResetDataDirectory }: { settings: AppSettings; status: string; modelOptions: string[]; copy: Copy; busy: boolean; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; onRefreshModels: () => void; onPasteKey: () => void; onChooseDataDirectory: () => void; onResetDataDirectory: () => void; }) {
+function SettingsFields({ settings, status, modelOptions, copy, busy, dataDirectoryDirty, onChange, onSave, onTest, onRefreshModels, onPasteKey, onChooseDataDirectory, onResetDataDirectory }: { settings: AppSettings; status: string; modelOptions: string[]; copy: Copy; busy: boolean; dataDirectoryDirty: boolean; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; onRefreshModels: () => void; onPasteKey: () => void; onChooseDataDirectory: () => void; onResetDataDirectory: () => void; }) {
+  const dataDirectoryTarget = settings.dataDirectory.trim() || copy.useDefaultPath;
+
   return (
     <div className="settingsFields">
       <datalist id="mimo-models">
@@ -1026,8 +1033,10 @@ function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, 
             <button type="button" onClick={onChooseDataDirectory} disabled={busy}>{copy.chooseFolder}</button>
             <button type="button" onClick={onResetDataDirectory} disabled={busy || !settings.dataDirectory}>{copy.useDefaultPath}</button>
           </div>
+          <button type="button" className="pathApplyButton" onClick={onSave} disabled={busy || !dataDirectoryDirty}>{copy.dataDirectoryApply}</button>
         </div>
         <div className="fieldHelp">{copy.dataDirectoryHelp}</div>
+        {dataDirectoryDirty ? <div className="fieldHelp dataDirectoryPending">{copy.dataDirectoryPending(dataDirectoryTarget)}</div> : null}
         <div className="fieldHelp">{copy.currentDataDirectory}: {settings.resolvedDataDirectory}</div>
       </label>
       {status ? <div className="settingsStatus">{status}</div> : null}

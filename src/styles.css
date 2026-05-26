@@ -869,10 +869,32 @@ button:disabled:active {
   background: #e3eee7;
 }
 
+.pathApplyButton {
+  min-height: 32px;
+  border: 1px solid #204f3b;
+  border-radius: 7px;
+  color: #ffffff;
+  background: #2f6b4f;
+}
+
+.pathApplyButton:hover:not(:disabled) {
+  background: #25583f;
+}
+
+.pathApplyButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .fieldHelp {
   color: #6e7c75;
   font-size: 11px;
   line-height: 1.45;
+}
+
+.dataDirectoryPending {
+  color: #20533d;
+  font-weight: 600;
 }
 
 .secretRow {

@@ -123,7 +123,7 @@ README / Release 里一度还保留了：
 - 清理旧 registry 项，不再回退写入
 - startup shortcut 用 `SW_HIDE`
 
-这说明我在“修代码”和“修文案”之间同步不够及时，后来已经补齐到 `v0.1.4`。
+这说明我在“修代码”和“修文案”之间同步不够及时，后来已经补齐到 `v0.1.5`。
 
 ## 4. 这次项目用了什么语言，怎么分层
 
@@ -288,7 +288,8 @@ README / Release 里一度还保留了：
 - `release/RELEASE_NOTES_v0.1.1.md`：当前正式版本的发布说明与校验值
 - `release/RELEASE_NOTES_v0.1.2.md`：数据目录功能版本的发布说明、实测结果与校验值
 - `release/RELEASE_NOTES_v0.1.3.md`：设置页排版顺序版本的发布说明与校验值
-- `release/RELEASE_NOTES_v0.1.4.md`：当前正式版本的发布说明、设置页间距修复与校验值
+- `release/RELEASE_NOTES_v0.1.4.md`：设置页间距修复版本的发布说明与校验值
+- `release/RELEASE_NOTES_v0.1.5.md`：当前正式版本的发布说明、路径保存交互修复与校验值
 
 ### src/
 
@@ -353,15 +354,18 @@ README / Release 里一度还保留了：
 - `release/SmartClipboard-v0.1.2-windows-x64.zip`：旧版本地 zip（GitHub Release 已有，不必留本地仓库）
 - `release/SmartClipboard-v0.1.3-windows-x64/`：旧版本地解包目录
 - `release/SmartClipboard-v0.1.3-windows-x64.zip`：旧版本地 zip（GitHub Release 已有，不必留本地仓库）
-- `release/SmartClipboard-v0.1.4-windows-x64/`：当前版本地解包目录
-- `release/SmartClipboard-v0.1.4-windows-x64.zip`：当前版本地 zip（GitHub Release 上传后不必留本地仓库）
+- `release/SmartClipboard-v0.1.4-windows-x64/`：旧版本地解包目录
+- `release/SmartClipboard-v0.1.4-windows-x64.zip`：旧版本地 zip（GitHub Release 已有，不必留本地仓库）
+- `release/SmartClipboard-v0.1.5-windows-x64/`：当前版本地解包目录
+- `release/SmartClipboard-v0.1.5-windows-x64.zip`：当前版本地 zip（GitHub Release 上传后不必留本地仓库）
 
 ### 保留但说明原因的文件
 
 - `release/RELEASE_NOTES_v0.1.1.md`：小而有用，保留历史版本说明与校验值
 - `release/RELEASE_NOTES_v0.1.2.md`：数据目录功能版本说明、校验值与实测记录
 - `release/RELEASE_NOTES_v0.1.3.md`：设置页排版顺序版本说明、校验值与修复记录
-- `release/RELEASE_NOTES_v0.1.4.md`：当前版本说明、校验值与设置页间距修复记录
+- `release/RELEASE_NOTES_v0.1.4.md`：设置页间距修复版本说明、校验值与修复记录
+- `release/RELEASE_NOTES_v0.1.5.md`：当前版本说明、校验值与文件路径保存交互修复记录
 - `src-tauri/gen/schemas/*`：生成文件，但有学习价值，也不大
 - `docs/reference-analysis.md`：前期设计痕迹，保留做背景资料
 
@@ -380,6 +384,8 @@ README / Release 里一度还保留了：
 v0.1.3 又修了一次设置页信息架构：`文件保存路径` 不再夹在 API base URL、API key、模型选择之间，而是移动到“保存 / 测试 / 模型”按钮之后，作为设置页最后的本地存储配置块。这样 API/模型设置和本地数据目录设置在视觉顺序上分开，用户不会误以为文件路径属于大模型配置。
 
 v0.1.4 继续调整这个区域的视觉间距：`文件保存路径` 模块顶部增加留白和分隔线，避免它的标题贴着上面的“模型”按钮，看起来像同一个 API 配置组。
+
+v0.1.5 修正了一个更关键的交互误导：之前“选择文件夹”只会改输入框，必须再点上方的“保存”才会迁移，但保存按钮已经属于 API/模型区域，用户很容易以为路径已经生效。现在文件路径模块内部有独立的“保存路径并重启”按钮；当输入路径与已保存路径不同时，会显示“待切换到”，而“当前实际数据目录”继续只表示已经生效、正在写入的目录。
 
 ## 10. 我这次可用的 skill 体系
 
