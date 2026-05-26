@@ -1,6 +1,6 @@
 [package]
 name = "smart_clipboard"
-version = "0.1.3"
+version = "0.1.4"
 description = "Smart clipboard manager"
 authors = ["local"]
 edition = "2021"

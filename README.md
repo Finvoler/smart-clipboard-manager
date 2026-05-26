@@ -24,7 +24,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.1.3-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.1.4-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -44,7 +44,7 @@ Do not run the exe directly from inside the zip file. Extract it first so startu
 - `API key`: paste your provider key locally.
 - `Search / archive model`: model used by AI search and AI archive.
 - `OCR model`: model used for image OCR.
-- `File save path`: optional custom directory for the local database, image cache, and later data files. It is placed after the API save/test/model controls because it belongs to local storage rather than model configuration. Use `Choose folder`, or type a path manually, then save. The app will ask for confirmation, migrate existing data, and restart.
+- `File save path`: optional custom directory for the local database, image cache, and later data files. It is separated from the API save/test/model controls because it belongs to local storage rather than model configuration. Use `Choose folder`, or type a path manually, then save. The app will ask for confirmation, migrate existing data, and restart.
 
 ## Huorong / Security Software Notes
 
@@ -120,7 +120,7 @@ The release exe is generated at:
 ```powershell
 git init
 git add README.md package.json package-lock.json tsconfig.json vite.config.ts index.html src src-tauri docs scripts
-git commit -m "Release Smart Clipboard v0.1.3"
+git commit -m "Release Smart Clipboard v0.1.4"
 git branch -M main
 git remote add origin https://github.com/<your-name>/<repo-name>.git
 git push -u origin main
@@ -131,8 +131,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `smart_clipboard.exe` and this README.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.1.3`.
-5. Upload `SmartClipboard-v0.1.3-windows-x64.zip`.
+4. Tag version: `v0.1.4`.
+5. Upload `SmartClipboard-v0.1.4-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

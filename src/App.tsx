@@ -1013,7 +1013,7 @@ function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, 
         <button onClick={onRefreshModels} disabled={busy}><RefreshCw size={14} /> {copy.models}</button>
       </div>
 
-      <label className="fieldLabel">
+      <label className="fieldLabel dataDirectoryField">
         {copy.dataDirectory}
         <div className="pathPickerRow">
           <input
