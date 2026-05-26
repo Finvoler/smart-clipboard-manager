@@ -97,6 +97,50 @@
 
 最新版还给 Tauri capability 补上了 `dialog:default`，否则前端 `@tauri-apps/plugin-dialog` 的“选择文件夹”按钮不会真正打开系统选择器。同时路径输入框也允许手工输入，作为系统对话框之外的交互兜底。
 
+### 2.4 H 盘 exe 重复启动、重启失败、数据目录与 exe 同目录冲突
+
+这是这轮里最折腾、也最值得记住的一组问题。
+
+一开始暴露出来的是两个现象：
+
+- 双击 `H:\Clipboard\SmartClipboard.exe` 之后，托盘里会出现两个 Smart Clipboard 进程。
+- 点击“保存路径并重启”后，Windows 会弹出“找不到 `\\` 文件”。
+
+根因后来拆成了三层：
+
+1. **没有单实例保护**
+  - 程序每启动一次都会完整初始化托盘、剪贴板监听和窗口。
+  - 所以从 H 盘重复打开 exe 时，系统层面不会帮你合并实例，应用自己也没拦。
+
+2. **Windows 的 `cmd /c start` 不是可靠的重启器**
+  - 当路径带引号、空格、中文目录或者 `\\?\` 前缀时，`cmd start` 的解析非常脆。
+  - 这次直接复现成了“找不到 `\\` 文件”。
+
+3. **允许把数据目录指到 exe 所在目录后，迁移逻辑不能再把整个目录当成应用私有目录**
+  - 以前如果把整个目录 copy/remove，会把 `SmartClipboard.exe` 一起搬动甚至删掉。
+  - 这在 `H:\Clipboard` 这种“exe 和数据库同目录”的便携式布局下是不能接受的。
+
+最后稳定下来的修复方案是：
+
+- Tauri 启动最前面挂 `tauri-plugin-single-instance`，让第二次启动只激活已有窗口。
+- Windows 重启改成隐藏 PowerShell `Start-Process`，并延迟 1.5 秒等旧进程退出。
+- 对重启路径先做 `\\?\` / `\\?\UNC\` 规范化，再做 PowerShell 单引号转义。
+- 数据目录迁移只复制 / 删除 `smart_clipboard.sqlite*` 与 `images\`。
+- 目标目录校验只拦已有 Smart Clipboard 数据的目录，不拦 `SmartClipboard.exe` 这类无关文件。
+
+这部分最后不是只靠单元测试收尾，而是直接用实际部署在 H 盘的 exe 做了往返验证：
+
+- `H:\Clipboard -> E:\SmartClipboardRestartSmoke`
+- `E:\SmartClipboardRestartSmoke -> H:\Clipboard`
+
+验证通过的标准不是“看起来重启了”，而是：
+
+- `%APPDATA%\com.local.smartclipboard\storage-bootstrap.json` 的 `pendingMigration == null`
+- 目标目录数据库真实存在
+- 临时目录被清理
+- `H:\Clipboard\SmartClipboard.exe` 仍然存在
+- 运行中只剩一个 SmartClipboard 进程
+
 ## 3. 这次我自己犯过的错误
 
 ### 3.1 过早下结论
@@ -177,6 +221,7 @@ README / Release 里一度还保留了：
 - `db.rs` 同时承担 schema、迁移、查询、业务规则，规模继续长大会很重
 - 错误类型大多用 `String` 往上抛，调试和分层表达都不够强
 - 配置项、AI 协议细节、模型默认值分散在多个地方
+- 数据目录迁移、重启、自启动、便携式部署之间的约束一开始没有被当成一个整体设计，导致需求一变化就连续冒边界 bug
 
 ### 5.3 更好的架构演进方向
 
@@ -259,6 +304,57 @@ README / Release 里一度还保留了：
 
 如果一上来直接读 `windows_impl.rs`，会非常痛苦。
 
+## 8. 这次问题的技术实现总结
+
+如果只看这次修复，可以把技术实现压缩成四个点：
+
+1. **单实例**
+  - 用 `tauri-plugin-single-instance`。
+  - 第二次启动不继续初始化系统资源，而是把主窗口 show / focus。
+
+2. **重启**
+  - 不用 `cmd /c start`，改用 PowerShell `Start-Process`。
+  - 为了兼容 Windows 的奇怪路径前缀，要先归一化路径，再做 PowerShell 字符串转义。
+
+3. **数据目录引导**
+  - 数据目录不能只存 SQLite，因为打开 SQLite 之前就要知道目录在哪。
+  - 所以用 `%APPDATA%\com.local.smartclipboard\storage-bootstrap.json` 做 pre-DB bootstrap。
+
+4. **迁移幂等与同目录部署**
+  - 迁移只移动应用数据，不碰 exe。
+  - 启动时看见 `pendingMigration` 要能继续收敛，而不是直接报“目录非空”。
+
+## 9. 下次做新项目必须先确认的开发规范
+
+这些规范最好在项目第一周就定死，不然后面都会变成补洞：
+
+1. 明确“安装目录”和“数据目录”是否允许同目录。
+2. 任何自启动、重启、单实例、托盘常驻需求都要在第一个可运行版本就做实机验证，不要只在 IDE 里跑 dev。
+3. Windows 路径相关逻辑禁止依赖 `cmd /c start` 这类有历史包袱的壳命令，优先直接 API 或 PowerShell `Start-Process`。
+4. 所有涉及文件迁移的逻辑都必须先定义“应用真正拥有的文件集合”，禁止对整个目录做想当然的 copy/remove。
+5. release 行为和 dev 行为要分开写验收清单，至少覆盖：启动、重启、升级、迁移、自启动、卸载残留。
+6. 前后端配置项必须有单一事实来源，避免 README、release notes、默认值、UI 文案四处漂移。
+7. 每修一次线上问题，都要补一个最小回归测试或一条可重复的 smoke case，不然同类问题会回来。
+
+## 10. 这套架构是不是最优
+
+结论很直接：**不是最优，但方向基本正确。**
+
+它适合一个 Windows 本地桌面工具快速做出完整能力闭环，尤其是：
+
+- React 做 UI 迭代快
+- Rust 做本地性能、系统集成和 SQLite 稳定
+- Tauri 把桌面壳成本压低
+
+但如果目标是长期迭代并持续加复杂系统能力，当前代码组织还需要继续拆：
+
+- 前端把巨型 `App.tsx` 拆掉
+- 后端把 `windows_impl.rs` / `db.rs` 拆成更细领域模块
+- 把 `String` 错误改成结构化错误
+- 给路径迁移、重启、自启动做单独的集成测试层
+
+也就是说，**架构选型不差，主要问题不是框架错，而是边界在实现阶段收得还不够早。**
+
 ## 8. 仓库结构总览
 
 下面按当前保留形式说明每个被跟踪文件负责什么。
@@ -289,7 +385,8 @@ README / Release 里一度还保留了：
 - `release/RELEASE_NOTES_v0.1.2.md`：数据目录功能版本的发布说明、实测结果与校验值
 - `release/RELEASE_NOTES_v0.1.3.md`：设置页排版顺序版本的发布说明与校验值
 - `release/RELEASE_NOTES_v0.1.4.md`：设置页间距修复版本的发布说明与校验值
-- `release/RELEASE_NOTES_v0.1.5.md`：当前正式版本的发布说明、路径保存交互修复与校验值
+- `release/RELEASE_NOTES_v0.1.5.md`：上一版本的发布说明、路径保存交互修复与校验值
+- `release/RELEASE_NOTES_v0.1.6.md`：当前正式版本的发布说明，记录单实例、重启与数据目录迁移修复
 
 ### src/
 
@@ -365,7 +462,8 @@ README / Release 里一度还保留了：
 - `release/RELEASE_NOTES_v0.1.2.md`：数据目录功能版本说明、校验值与实测记录
 - `release/RELEASE_NOTES_v0.1.3.md`：设置页排版顺序版本说明、校验值与修复记录
 - `release/RELEASE_NOTES_v0.1.4.md`：设置页间距修复版本说明、校验值与修复记录
-- `release/RELEASE_NOTES_v0.1.5.md`：当前版本说明、校验值与文件路径保存交互修复记录
+- `release/RELEASE_NOTES_v0.1.5.md`：上一版本说明、校验值与文件路径保存交互修复记录
+- `release/RELEASE_NOTES_v0.1.6.md`：当前版本说明、单实例/重启/迁移安全修复记录
 - `src-tauri/gen/schemas/*`：生成文件，但有学习价值，也不大
 - `docs/reference-analysis.md`：前期设计痕迹，保留做背景资料
 
@@ -375,11 +473,23 @@ README / Release 里一度还保留了：
 
 最新版用真实 release exe 做过两轮路径切换：
 
-- `H:\Clipboard\SmartClipboard.exe` 启动后，设置页路径指向 `H:\Clipboard\data`。
-- 临时创建 `D:\ClipboardPathTest`，通过设置页切换过去，重启后 `storage-bootstrap.json` 指向 `D:\ClipboardPathTest`，唯一测试文本写入 D 目录下的 `smart_clipboard.sqlite`，H 与默认 AppData 数据库没有该记录。
-- 再从 D 切回 `H:\Clipboard\data`，重启后唯一测试文本写入 H 目录下的 `smart_clipboard.sqlite`，D 测试目录被迁移清空，默认 AppData 数据库没有该记录。
+- `H:\Clipboard\SmartClipboard.exe` 启动后，设置页实际生效目录就是 `H:\Clipboard`。
+- 通过真实 UI 从 `H:\Clipboard` 切到 `E:\SmartClipboardRestartSmoke`，重启后 `storage-bootstrap.json` 指向 `E:\SmartClipboardRestartSmoke`，目标目录出现 `smart_clipboard.sqlite`，H 盘 exe 仍然存在且运行中只剩一个进程。
+- 再从 `E:\SmartClipboardRestartSmoke` 切回 `H:\Clipboard`，重启后 `storage-bootstrap.json` 回到 `H:\Clipboard`，`pendingMigration == null`，H 盘数据库恢复存在，临时目录被迁移清空。
 
-测试机没有真实 D 盘，所以这次用 Windows `subst` 临时映射出 D: 盘做路径行为验证，测试后已经删除映射和底层测试目录。路径选择、迁移、重启、落库这条链路已闭环。
+这次不是只做脚本层验证，而是直接对 `H:\Clipboard\SmartClipboard.exe` 做真实往返切换。最终确认：数据已经稳定保存在 H 盘，重启后不会多开，迁移也不会碰 `SmartClipboard.exe` 本体。
+
+## 9.2 当前机器的实际生效版本与启动源
+
+当前机器已经核对过“谁会在重启或开机后真正工作”：
+
+- 运行中的 Smart Clipboard 只有 H 盘这一份：`H:\Clipboard\SmartClipboard.exe`
+- 唯一开机启动入口是 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Smart Clipboard Manager.lnk`
+- 这个启动快捷方式明确指向 `H:\Clipboard\SmartClipboard.exe --startup`
+- 没有 Smart Clipboard 的 registry `Run` 残留
+- 没有 Smart Clipboard 的计划任务残留
+
+这意味着只要清掉仓库里旧的 release exe 副本，就不会出现“电脑重启后多个不同版本一起干活”的情况。
 
 v0.1.3 又修了一次设置页信息架构：`文件保存路径` 不再夹在 API base URL、API key、模型选择之间，而是移动到“保存 / 测试 / 模型”按钮之后，作为设置页最后的本地存储配置块。这样 API/模型设置和本地数据目录设置在视觉顺序上分开，用户不会误以为文件路径属于大模型配置。
 

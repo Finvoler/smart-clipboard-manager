@@ -419,10 +419,12 @@ export function App() {
   }
 
   async function saveSettings(nextSettings = settings) {
+    const pendingDataDirectoryChange = !!nextSettings && hasPendingDataDirectoryChange(nextSettings);
     await runWithPending('settings:save', async () => {
       try {
         if (!nextSettings) return;
-        if (hasPendingDataDirectoryChange(nextSettings)) {
+        if (pendingDataDirectoryChange) {
+          // 数据目录切换不是普通设置保存：Rust 端会先写 bootstrap pending，再通过重启完成迁移。
           const targetLabel = nextSettings.dataDirectory.trim() || copy.useDefaultPath;
           const confirmed = window.confirm(copy.dataDirectoryConfirm(targetLabel));
           if (!confirmed) return;
@@ -444,7 +446,11 @@ export function App() {
         }
         await persistSettings(nextSettings);
       } catch (error) {
-        setSettingsStatus(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        setSettingsStatus(message);
+        if (pendingDataDirectoryChange) {
+          window.alert(message);
+        }
       }
     });
   }

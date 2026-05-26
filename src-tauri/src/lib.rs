@@ -64,7 +64,27 @@ pub struct DataDirectoryChangeResult {
 pub fn run() {
     install_auto_restart_hook();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // 单实例插件必须先注册，后续 setup/窗口逻辑才不会让第二个进程继续初始化托盘和系统钩子。
+    builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        if args.iter().any(|arg| arg == STARTUP_ARG) {
+            return;
+        }
+
+        if let Some(state) = app.try_state::<AppState>() {
+            let _ = platform::show_main_window(app, &state.last_foreground_window);
+            return;
+        }
+
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::hide_window,
@@ -209,26 +229,51 @@ fn run_pending_migration(bootstrap: &mut BootstrapConfig) -> Result<(), String> 
         return Ok(());
     }
 
-    if to.exists() {
-        let mut entries = fs::read_dir(&to).map_err(|error| error.to_string())?;
-        if entries.next().is_some() {
-            // 如果上次重启已经把数据库复制过去，但还没来得及清 pending，这里直接收敛。
-            if to.join("smart_clipboard.sqlite").exists() {
-                bootstrap.pending_migration = None;
-                return Ok(());
-            }
-            return Err(format!(
-                "Target data directory is not empty: {}",
-                to.to_string_lossy()
-            ));
+    if to.exists() && target_dir_has_conflicting_app_data(&to)? {
+        // 如果上次重启已经把数据库复制过去，但还没来得及清 pending，这里直接收敛。
+        if to.join("smart_clipboard.sqlite").exists() {
+            bootstrap.pending_migration = None;
+            return Ok(());
         }
+        return Err(target_dir_conflict_message(&to));
     }
 
-    copy_dir_recursive(&from, &to)?;
+    copy_app_data_files(&from, &to)?;
     rewrite_migrated_image_paths(&to, &from, &to)?;
-    let _ = fs::remove_dir_all(&from);
+    remove_app_data_files(&from);
+    remove_dir_if_empty(&from);
     bootstrap.pending_migration = None;
     Ok(())
+}
+
+fn copy_app_data_files(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|error| error.to_string())?;
+    // 只迁移应用数据文件，允许 exe 与数据库位于同一目录而不误动程序本体。
+    copy_if_exists(&from.join("smart_clipboard.sqlite"), &to.join("smart_clipboard.sqlite"))?;
+    copy_if_exists(
+        &from.join("smart_clipboard.sqlite-wal"),
+        &to.join("smart_clipboard.sqlite-wal"),
+    )?;
+    copy_if_exists(
+        &from.join("smart_clipboard.sqlite-shm"),
+        &to.join("smart_clipboard.sqlite-shm"),
+    )?;
+
+    let images_dir = from.join("images");
+    if images_dir.is_dir() {
+        copy_dir_recursive(&images_dir, &to.join("images"))?;
+    }
+    Ok(())
+}
+
+fn copy_if_exists(from: &Path, to: &Path) -> Result<(), String> {
+    if !from.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::copy(from, to).map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
@@ -245,6 +290,23 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn remove_app_data_files(from: &Path) {
+    // 清理时同样只删应用数据，保留目标目录里可能共存的 SmartClipboard.exe 或其他用户文件。
+    let _ = fs::remove_file(from.join("smart_clipboard.sqlite"));
+    let _ = fs::remove_file(from.join("smart_clipboard.sqlite-wal"));
+    let _ = fs::remove_file(from.join("smart_clipboard.sqlite-shm"));
+    let _ = fs::remove_dir_all(from.join("images"));
+}
+
+fn remove_dir_if_empty(path: &Path) {
+    let Ok(mut entries) = fs::read_dir(path) else {
+        return;
+    };
+    if entries.next().is_none() {
+        let _ = fs::remove_dir(path);
+    }
 }
 
 fn rewrite_migrated_image_paths(
@@ -436,16 +498,37 @@ pub(crate) fn validate_data_dir_change(
     if current_dir == target_dir {
         return Ok(());
     }
-    if target_dir.exists() {
-        let mut entries = fs::read_dir(&target_dir).map_err(|error| error.to_string())?;
-        if entries.next().is_some() {
-            return Err(format!(
-                "Target data directory is not empty: {}",
-                target_dir.to_string_lossy()
-            ));
-        }
+    if target_dir.exists() && target_dir_has_conflicting_app_data(&target_dir)? {
+        return Err(target_dir_conflict_message(&target_dir));
     }
     Ok(())
+}
+
+fn target_dir_has_conflicting_app_data(target_dir: &Path) -> Result<bool, String> {
+    let db_path = target_dir.join("smart_clipboard.sqlite");
+    if db_path.exists() {
+        return Ok(true);
+    }
+
+    // 目录里存在 exe、README 或其他无关文件都允许；真正冲突的是旧数据库或非空 images 数据目录。
+    let images_dir = target_dir.join("images");
+    if !images_dir.exists() {
+        return Ok(false);
+    }
+
+    if !images_dir.is_dir() {
+        return Ok(true);
+    }
+
+    let mut entries = fs::read_dir(&images_dir).map_err(|error| error.to_string())?;
+    Ok(entries.next().is_some())
+}
+
+fn target_dir_conflict_message(target_dir: &Path) -> String {
+    format!(
+        "Target data directory already contains Smart Clipboard data: {}",
+        target_dir.to_string_lossy()
+    )
 }
 
 pub(crate) fn current_data_dir_string(state: &AppState) -> Result<String, String> {
@@ -456,17 +539,66 @@ pub(crate) fn current_data_dir_string(state: &AppState) -> Result<String, String
         .map(|path| path.to_string_lossy().to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn spawn_replacement_process(reason: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    let exe_path = std::env::current_exe().map_err(|error| error.to_string())?;
+    let exe = windows_restart_path(exe_path.clone());
+    let working_dir = exe_path
+        .parent()
+        .map(|path| windows_restart_path(path.to_path_buf()))
+        .unwrap_or_else(|| ".".to_string());
+    let script = format!(
+        "Start-Sleep -Milliseconds 1500; Start-Process -FilePath '{}' -WorkingDirectory '{}'",
+        windows_powershell_literal(&exe),
+        windows_powershell_literal(&working_dir)
+    );
+    // 单实例保护开启后，新进程必须等旧进程退出后再启动，否则会被当成重复实例立即关闭。
+    // 这里故意不用 cmd /c start，避免 Windows 对引号和 \\?\ 前缀的解析把重启路径打坏。
+    Command::new("powershell")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .env("SMART_CLIPBOARD_RESTART_REASON", reason)
+        .env("SMART_CLIPBOARD_RESTARTED", "1")
+        .creation_flags(0x08000000 /* CREATE_NO_WINDOW */)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_restart_path(path: PathBuf) -> String {
+    let raw = path.to_string_lossy();
+    if let Some(stripped) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", stripped);
+    }
+    if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        return stripped.to_string();
+    }
+    raw.into_owned()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_powershell_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(not(target_os = "windows"))]
 fn spawn_replacement_process(reason: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut cmd = Command::new(exe);
     cmd.env("SMART_CLIPBOARD_RESTART_REASON", reason)
         .env("SMART_CLIPBOARD_RESTARTED", "1");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW 避免重启出来一个新的控制台窗口。
-        cmd.creation_flags(0x08000000 /* CREATE_NO_WINDOW */);
-    }
     cmd.spawn()
         .map(|_| ())
         .map_err(|error| error.to_string())
@@ -509,4 +641,93 @@ where
         *cached = saved.clone();
     }
     Ok(saved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        copy_app_data_files, remove_app_data_files, remove_dir_if_empty,
+        target_dir_has_conflicting_app_data,
+    };
+    use std::{env, fs, path::PathBuf};
+    use uuid::Uuid;
+
+    #[cfg(target_os = "windows")]
+    use super::windows_restart_path;
+
+    struct TempTestDir {
+        path: PathBuf,
+    }
+
+    impl TempTestDir {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("smart-clipboard-test-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).expect("failed to create temp test dir");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempTestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn allows_target_dir_with_unrelated_files() {
+        let temp = TempTestDir::new();
+        fs::write(temp.path.join("SmartClipboard.exe"), b"exe").expect("failed to write test file");
+
+        assert!(
+            !target_dir_has_conflicting_app_data(&temp.path).expect("unexpected validation failure")
+        );
+    }
+
+    #[test]
+    fn rejects_target_dir_with_existing_database() {
+        let temp = TempTestDir::new();
+        fs::write(temp.path.join("smart_clipboard.sqlite"), b"db").expect("failed to write db file");
+
+        assert!(
+            target_dir_has_conflicting_app_data(&temp.path).expect("unexpected validation failure")
+        );
+    }
+
+    #[test]
+    fn migrates_only_app_data_files() {
+        let source = TempTestDir::new();
+        let target = TempTestDir::new();
+        fs::write(source.path.join("SmartClipboard.exe"), b"exe").expect("failed to write exe");
+        fs::write(source.path.join("smart_clipboard.sqlite"), b"db").expect("failed to write db");
+        fs::create_dir_all(source.path.join("images")).expect("failed to create images dir");
+        fs::write(source.path.join("images").join("item.png"), b"png").expect("failed to write image");
+
+        copy_app_data_files(&source.path, &target.path).expect("failed to copy app data");
+        remove_app_data_files(&source.path);
+        remove_dir_if_empty(&source.path);
+
+        assert!(source.path.join("SmartClipboard.exe").exists());
+        assert!(!source.path.join("smart_clipboard.sqlite").exists());
+        assert!(target.path.join("smart_clipboard.sqlite").exists());
+        assert!(target.path.join("images").join("item.png").exists());
+        assert!(!target.path.join("SmartClipboard.exe").exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn strips_verbatim_drive_prefix_for_restart() {
+        assert_eq!(
+            windows_restart_path(PathBuf::from(r"\\?\H:\Clipboard\SmartClipboard.exe")),
+            r"H:\Clipboard\SmartClipboard.exe"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn strips_verbatim_unc_prefix_for_restart() {
+        assert_eq!(
+            windows_restart_path(PathBuf::from(r"\\?\UNC\server\share\SmartClipboard.exe")),
+            r"\\server\share\SmartClipboard.exe"
+        );
+    }
 }

@@ -17,6 +17,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 - AI settings panel for OpenAI-compatible or Anthropic-compatible APIs, base URLs, API key, search model, and OCR model.
 - Chinese/English UI language setting.
 - Custom data directory setting for the SQLite database, image cache, and future local data files, with restart-time migration.
+- Single-instance protection so duplicate launches focus the existing window instead of creating another tray/runtime process.
 - System tray controls: show app, switch native/software `Win+V`, restart app, quit.
 - Current-user startup support through the Windows Startup folder shortcut; legacy registry Run entries are cleaned up automatically.
 - Startup launches with a hidden `--startup` mode, hidden shortcut show command, and no-window restart behavior so login does not open the main app window or a console.
@@ -24,7 +25,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.1.5-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.1.6-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -57,6 +58,12 @@ You can open the startup folder with `Win + R`, then enter `shell:startup`.
 
 The startup shortcut should point to `smart_clipboard.exe` and include the `--startup` argument. If you move the app to a new folder, run it once and toggle `Start with Windows` off and on to refresh the shortcut.
 
+For the current machine state verified in this repo session:
+
+- The only startup entry is `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Smart Clipboard Manager.lnk`.
+- It points to `H:\Clipboard\SmartClipboard.exe` with `--startup`.
+- There are no Smart Clipboard registry `Run` entries and no Smart Clipboard scheduled tasks.
+
 ## Local Data
 
 By default, app data is stored under the Tauri app data directory for identifier `com.local.smartclipboard`, usually:
@@ -73,7 +80,9 @@ If `File save path` is set in Settings, `smart_clipboard.sqlite`, `images\`, and
 
 `H:\Clipboard\SmartClipboard.exe`
 
-`H:\Clipboard\data\smart_clipboard.sqlite`
+`H:\Clipboard\smart_clipboard.sqlite`
+
+This same-directory layout is now supported intentionally. Migration only copies or removes `smart_clipboard.sqlite*` and `images\`, so the exe can stay in `H:\Clipboard` safely while data is switched away and back.
 
 The app still keeps `storage-bootstrap.json` in AppData because the database path must be known before the database can be opened.
 
@@ -120,7 +129,7 @@ The release exe is generated at:
 ```powershell
 git init
 git add README.md package.json package-lock.json tsconfig.json vite.config.ts index.html src src-tauri docs scripts
-git commit -m "Release Smart Clipboard v0.1.5"
+git commit -m "Release Smart Clipboard v0.1.6"
 git branch -M main
 git remote add origin https://github.com/<your-name>/<repo-name>.git
 git push -u origin main
@@ -131,8 +140,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `smart_clipboard.exe` and this README.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.1.5`.
-5. Upload `SmartClipboard-v0.1.5-windows-x64.zip`.
+4. Tag version: `v0.1.6`.
+5. Upload `SmartClipboard-v0.1.6-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:
