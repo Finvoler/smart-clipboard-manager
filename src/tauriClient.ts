@@ -1,6 +1,13 @@
+/*
+ * 前端和 Tauri 后端的通信薄封装。
+ *
+ * 这里统一管理 invoke / event listen，并在非 Tauri 环境下提供少量 demo 数据，
+ * 方便纯前端预览页面结构。
+ */
+
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion } from './types';
+import type { AppSettings, ClipboardItem, DataDirectoryChangeResult, Folder, QuickItem, QuickSuggestion } from './types';
 
 const hasTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -22,6 +29,8 @@ const demoSettings: AppSettings = {
   interceptWinV: true,
   runAtStartup: false,
   hideConsoleWindow: true,
+  dataDirectory: '',
+  resolvedDataDirectory: 'E:/SmartClipboardData',
   aiProtocol: 'openai',
   openaiBaseUrl: 'https://api.xiaomimimo.com/v1',
   anthropicBaseUrl: 'https://api.xiaomimimo.com/anthropic',
@@ -47,6 +56,15 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (command === 'get_quick_suggestions') return [] as T;
   if (command === 'get_app_settings') return demoSettings as T;
   if (command === 'save_app_settings') return { ...demoSettings, ...(args?.settings as Partial<AppSettings> | undefined) } as T;
+  if (command === 'change_data_directory') {
+    const settings = { ...demoSettings, ...(args?.settings as Partial<AppSettings> | undefined) };
+    return {
+      settings,
+      message: 'Demo runtime: app would restart to migrate data directory',
+      restartRequired: true,
+    } as T;
+  }
+  if (command === 'restart_application') return undefined as T;
   if (command === 'test_ai_connection') return 'Demo runtime: Tauri is not available' as T;
   if (command === 'list_ai_models') return ['mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-flash'] as T;
   if (command === 'accept_quick_suggestion') return { id: 'demo-quick', content: 'demo quick item', hitCount: 5, createdAt: Math.floor(Date.now() / 1000), updatedAt: Math.floor(Date.now() / 1000), expiresAt: Math.floor(Date.now() / 1000) + 86400, isPinned: false } as T;
@@ -86,4 +104,4 @@ export async function onQuickSuggestionDetected(callback: (item: QuickSuggestion
   return unlisten;
 }
 
-export type { AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion };
+export type { AppSettings, ClipboardItem, DataDirectoryChangeResult, Folder, QuickItem, QuickSuggestion };

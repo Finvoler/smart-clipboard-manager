@@ -1,3 +1,6 @@
+// 轻量发布闸门脚本。
+// 它不做完整测试，而是快速确认关键文件、关键 IPC 命令和关键配置没有被删坏。
+
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 

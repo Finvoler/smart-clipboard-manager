@@ -1,3 +1,8 @@
+//! SQLite 数据层。
+//!
+//! 这个文件是项目的持久化核心：历史记录、文件夹、临时池、待确认候选、
+//! 应用设置、图片元数据和 OCR 文本都在这里落库。
+
 use std::{fs, path::PathBuf};
 
 use image::ImageBuffer;
@@ -32,6 +37,7 @@ impl Database {
     }
 
     fn init(&self) -> Result<(), AppError> {
+        // 表结构集中初始化，避免把 schema 分散到命令层或业务逻辑里。
         self.conn.execute_batch(
             "
       PRAGMA journal_mode = WAL;
@@ -97,6 +103,7 @@ impl Database {
         intercept_win_v INTEGER NOT NULL,
         run_at_startup INTEGER NOT NULL,
         hide_console_window INTEGER NOT NULL,
+                data_directory TEXT NOT NULL DEFAULT '',
         ai_protocol TEXT NOT NULL,
         openai_base_url TEXT NOT NULL,
         anthropic_base_url TEXT NOT NULL,
@@ -111,6 +118,11 @@ impl Database {
         self.ensure_column("items", "image_hash", "TEXT")?;
         self.ensure_column("items", "ocr_text", "TEXT")?;
         self.ensure_column("app_settings", "language", "TEXT NOT NULL DEFAULT 'zh'")?;
+        self.ensure_column(
+            "app_settings",
+            "data_directory",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_items_image_hash ON items(image_hash)",
             [],
@@ -137,14 +149,15 @@ impl Database {
     fn ensure_settings_row(&self) -> Result<(), AppError> {
         let defaults = AppSettings::default();
         self.conn.execute(
-    "INSERT OR IGNORE INTO app_settings (id, app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model, language, updated_at)
-     VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT OR IGNORE INTO app_settings (id, app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, data_directory, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model, language, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
       params![
         bool_to_int(defaults.app_enabled),
         bool_to_int(defaults.capture_enabled),
         bool_to_int(defaults.intercept_win_v),
         bool_to_int(defaults.run_at_startup),
         bool_to_int(defaults.hide_console_window),
+                defaults.data_directory,
         defaults.ai_protocol,
         defaults.openai_base_url,
         defaults.anthropic_base_url,
@@ -160,7 +173,7 @@ impl Database {
 
     pub fn get_app_settings(&self) -> Result<AppSettings, AppError> {
         self.conn.query_row(
-    "SELECT app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model, language FROM app_settings WHERE id = 1",
+        "SELECT app_enabled, capture_enabled, intercept_win_v, run_at_startup, hide_console_window, data_directory, ai_protocol, openai_base_url, anthropic_base_url, api_key, search_model, ocr_model, language FROM app_settings WHERE id = 1",
       [],
       |row| Ok(AppSettings {
         app_enabled: int_to_bool(row.get::<_, i64>(0)?),
@@ -168,13 +181,15 @@ impl Database {
         intercept_win_v: int_to_bool(row.get::<_, i64>(2)?),
         run_at_startup: int_to_bool(row.get::<_, i64>(3)?),
         hide_console_window: int_to_bool(row.get::<_, i64>(4)?),
-        ai_protocol: row.get(5)?,
-        openai_base_url: row.get(6)?,
-        anthropic_base_url: row.get(7)?,
-        api_key: row.get(8)?,
-        search_model: row.get(9)?,
-        ocr_model: row.get(10)?,
-                language: row.get(11)?,
+                data_directory: row.get(5)?,
+                resolved_data_directory: String::new(),
+                ai_protocol: row.get(6)?,
+                openai_base_url: row.get(7)?,
+                anthropic_base_url: row.get(8)?,
+                api_key: row.get(9)?,
+                search_model: row.get(10)?,
+                ocr_model: row.get(11)?,
+                                language: row.get(12)?,
       }),
     ).map(|settings| settings.normalized()).map_err(AppError::from)
     }
@@ -182,13 +197,14 @@ impl Database {
     pub fn save_app_settings(&self, settings: AppSettings) -> Result<AppSettings, AppError> {
         let settings = settings.normalized();
         self.conn.execute(
-    "UPDATE app_settings SET app_enabled = ?1, capture_enabled = ?2, intercept_win_v = ?3, run_at_startup = ?4, hide_console_window = ?5, ai_protocol = ?6, openai_base_url = ?7, anthropic_base_url = ?8, api_key = ?9, search_model = ?10, ocr_model = ?11, language = ?12, updated_at = ?13 WHERE id = 1",
+        "UPDATE app_settings SET app_enabled = ?1, capture_enabled = ?2, intercept_win_v = ?3, run_at_startup = ?4, hide_console_window = ?5, data_directory = ?6, ai_protocol = ?7, openai_base_url = ?8, anthropic_base_url = ?9, api_key = ?10, search_model = ?11, ocr_model = ?12, language = ?13, updated_at = ?14 WHERE id = 1",
       params![
         bool_to_int(settings.app_enabled),
         bool_to_int(settings.capture_enabled),
         bool_to_int(settings.intercept_win_v),
         bool_to_int(settings.run_at_startup),
         bool_to_int(settings.hide_console_window),
+                settings.data_directory,
         settings.ai_protocol,
         settings.openai_base_url,
         settings.anthropic_base_url,

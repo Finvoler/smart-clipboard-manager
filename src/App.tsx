@@ -1,3 +1,10 @@
+/*
+ * 前端主界面。
+ *
+ * 这是整个 React UI 的核心文件：侧边栏、历史列表、图片预览、编辑态、设置面板、
+ * AI 搜索、AI 整理、临时池和多语言文案都集中在这里。
+ */
+
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { Archive, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, CornerDownLeft, Edit3, Folder as FolderIcon, FolderOpen, FolderPlus, Image as ImageIcon, Pin, Power, RefreshCw, Save, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -5,7 +12,8 @@ import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import { call, fileSrc, onNewItem, onQuickSuggestionDetected, type AppSettings, type ClipboardItem, type Folder, type QuickItem, type QuickSuggestion } from './tauriClient';
+import { open } from '@tauri-apps/plugin-dialog';
+import { call, fileSrc, onNewItem, onQuickSuggestionDetected, type AppSettings, type ClipboardItem, type DataDirectoryChangeResult, type Folder, type QuickItem, type QuickSuggestion } from './tauriClient';
 
 const DEFAULT_LIMIT = 120;
 
@@ -35,6 +43,13 @@ const COPY = {
     aiOrganizing: 'AI 正在整理分类...',
     aiOrganized: (count: number) => `AI 已整理 ${count} 条记录`,
     settingsSaved: '已保存',
+    dataDirectory: '文件保存路径',
+    currentDataDirectory: '当前实际数据目录',
+    chooseFolder: '选择文件夹',
+    useDefaultPath: '恢复默认',
+    dataDirectoryHelp: '数据库、图片缓存和后续数据文件都会保存在这里。可选择文件夹或手动输入路径，保存后会自动重启并迁移现有数据。',
+    dataDirectoryConfirm: (target: string) => `确认把数据迁移到「${target}」？应用会自动重启。`,
+    dataDirectoryRestarting: '正在切换数据目录并重启...',
     loadedModels: (count: number) => `已加载 ${count} 个模型`,
     clipboardEmpty: '剪贴板为空',
     apiKeyPasted: 'API key 已本地粘贴',
@@ -110,6 +125,13 @@ const COPY = {
     aiOrganizing: 'AI is organizing records...',
     aiOrganized: (count: number) => `AI organized ${count} records`,
     settingsSaved: 'Saved',
+    dataDirectory: 'Data directory',
+    currentDataDirectory: 'Current active data directory',
+    chooseFolder: 'Choose folder',
+    useDefaultPath: 'Use default',
+    dataDirectoryHelp: 'The database, image cache, and future data files will be stored here. Choose a folder or type a path, then save to restart and migrate existing data.',
+    dataDirectoryConfirm: (target: string) => `Move existing data to "${target}" and restart the app?`,
+    dataDirectoryRestarting: 'Switching data directory and restarting...',
     loadedModels: (count: number) => `Loaded ${count} models`,
     clipboardEmpty: 'Clipboard is empty',
     apiKeyPasted: 'API key pasted locally',
@@ -181,6 +203,7 @@ export function App() {
   const [quickItems, setQuickItems] = useState<QuickItem[]>([]);
   const [quickSuggestions, setQuickSuggestions] = useState<QuickSuggestion[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [savedSettings, setSavedSettings] = useState<AppSettings | null>(null);
   const [modelOptions, setModelOptions] = useState<string[]>(['mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-flash']);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -244,6 +267,7 @@ export function App() {
     setQuickItems(pool);
     setQuickSuggestions(suggestions);
     setSettings(appSettings);
+    setSavedSettings(appSettings);
     setSelectedId((current) => current ?? history[0]?.id ?? null);
   }
 
@@ -381,13 +405,39 @@ export function App() {
     if (!nextSettings) return null;
     const saved = await call<AppSettings>('save_app_settings', { settings: { ...nextSettings, appEnabled: true } });
     setSettings(saved);
+    setSavedSettings(saved);
     setSettingsStatus(copy.settingsSaved);
     return saved;
+  }
+
+  function hasPendingDataDirectoryChange(nextSettings: AppSettings) {
+    return nextSettings.dataDirectory.trim() !== (savedSettings?.dataDirectory.trim() ?? '');
   }
 
   async function saveSettings(nextSettings = settings) {
     await runWithPending('settings:save', async () => {
       try {
+        if (!nextSettings) return;
+        if (hasPendingDataDirectoryChange(nextSettings)) {
+          const targetLabel = nextSettings.dataDirectory.trim() || copy.useDefaultPath;
+          const confirmed = window.confirm(copy.dataDirectoryConfirm(targetLabel));
+          if (!confirmed) return;
+          setSettingsStatus(copy.dataDirectoryRestarting);
+          const result = await call<DataDirectoryChangeResult>('change_data_directory', {
+            settings: { ...nextSettings, appEnabled: true },
+          });
+          setSettings(result.settings);
+          setSavedSettings(result.settings);
+          setSettingsStatus(result.message);
+          if (result.restartRequired) {
+            try {
+              await call('restart_application');
+            } catch {
+              // The app exits during restart, so invoke can disconnect before resolving.
+            }
+          }
+          return;
+        }
         await persistSettings(nextSettings);
       } catch (error) {
         setSettingsStatus(error instanceof Error ? error.message : String(error));
@@ -434,6 +484,31 @@ export function App() {
         setSettingsStatus(error instanceof Error ? error.message : String(error));
       }
     });
+  }
+
+  async function chooseDataDirectory() {
+    if (!settings) return;
+    await runWithPending('settings:path', async () => {
+      try {
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          defaultPath: settings.dataDirectory || settings.resolvedDataDirectory || undefined,
+        });
+        const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+        if (typeof selectedPath === 'string' && selectedPath.trim()) {
+          updateSettings({ dataDirectory: selectedPath });
+          setSettingsStatus('');
+        }
+      } catch (error) {
+        setSettingsStatus(error instanceof Error ? error.message : String(error));
+      }
+    });
+  }
+
+  function resetDataDirectory() {
+    updateSettings({ dataDirectory: '' });
+    setSettingsStatus('');
   }
 
   async function executePaste(id: string, overrideText?: string, pendingKey = `paste:${id || overrideText || 'override'}`) {
@@ -612,7 +687,7 @@ export function App() {
 
   const aiSearchPending = aiSearchRunning || isPending('ai:search');
   const categorizePending = categorizeRunning || isPending('ai:categorize');
-  const settingsBusy = ['settings:save', 'settings:test', 'settings:models', 'settings:pasteKey'].some(isPending);
+  const settingsBusy = ['settings:save', 'settings:test', 'settings:models', 'settings:pasteKey', 'settings:path'].some(isPending);
 
   return (
     <main className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
@@ -802,6 +877,8 @@ export function App() {
               onTest={() => void testAiConnection()}
               onRefreshModels={() => void refreshModelOptions()}
               onPasteKey={() => void pasteApiKeyFromClipboard()}
+              onChooseDataDirectory={() => void chooseDataDirectory()}
+              onResetDataDirectory={resetDataDirectory}
             />
           ) : <div className="emptyHint">{copy.settingsLoading}</div>}
         </SidebarSection>
@@ -870,7 +947,7 @@ function QuickSuggestionRow({ item, copy, pending, onAccept, onDismiss }: { item
   );
 }
 
-function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, onSave, onTest, onRefreshModels, onPasteKey }: { settings: AppSettings; status: string; modelOptions: string[]; copy: Copy; busy: boolean; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; onRefreshModels: () => void; onPasteKey: () => void; }) {
+function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, onSave, onTest, onRefreshModels, onPasteKey, onChooseDataDirectory, onResetDataDirectory }: { settings: AppSettings; status: string; modelOptions: string[]; copy: Copy; busy: boolean; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; onRefreshModels: () => void; onPasteKey: () => void; onChooseDataDirectory: () => void; onResetDataDirectory: () => void; }) {
   return (
     <div className="settingsFields">
       <datalist id="mimo-models">
@@ -929,6 +1006,23 @@ function SettingsFields({ settings, status, modelOptions, copy, busy, onChange, 
       <label className="fieldLabel">
         {copy.ocrModel}
         <input list="mimo-models" value={settings.ocrModel} disabled={busy} onChange={(event) => onChange({ ocrModel: event.target.value })} />
+      </label>
+      <label className="fieldLabel">
+        {copy.dataDirectory}
+        <div className="pathPickerRow">
+          <input
+            value={settings.dataDirectory}
+            placeholder={settings.resolvedDataDirectory || copy.useDefaultPath}
+            disabled={busy}
+            onChange={(event) => onChange({ dataDirectory: event.target.value })}
+          />
+          <div className="pathPickerActions">
+            <button type="button" onClick={onChooseDataDirectory} disabled={busy}>{copy.chooseFolder}</button>
+            <button type="button" onClick={onResetDataDirectory} disabled={busy || !settings.dataDirectory}>{copy.useDefaultPath}</button>
+          </div>
+        </div>
+        <div className="fieldHelp">{copy.dataDirectoryHelp}</div>
+        <div className="fieldHelp">{copy.currentDataDirectory}: {settings.resolvedDataDirectory}</div>
       </label>
 
       <div className="settingsActions">

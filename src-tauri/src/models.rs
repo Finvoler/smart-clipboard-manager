@@ -1,3 +1,7 @@
+//! 前后端共享的数据模型。
+//!
+//! 这些结构体既是 SQLite 读写后的业务对象，也是 Tauri IPC 的序列化边界。
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +62,8 @@ pub struct AppSettings {
     pub intercept_win_v: bool,
     pub run_at_startup: bool,
     pub hide_console_window: bool,
+    pub data_directory: String,
+    pub resolved_data_directory: String,
     pub ai_protocol: String,
     pub openai_base_url: String,
     pub anthropic_base_url: String,
@@ -75,6 +81,8 @@ impl Default for AppSettings {
             intercept_win_v: true,
             run_at_startup: false,
             hide_console_window: true,
+            data_directory: String::new(),
+            resolved_data_directory: String::new(),
             ai_protocol: "openai".to_string(),
             openai_base_url: "https://api.xiaomimimo.com/v1".to_string(),
             anthropic_base_url: "https://api.xiaomimimo.com/anthropic".to_string(),
@@ -92,6 +100,8 @@ impl AppSettings {
         if self.ai_protocol != "anthropic" {
             self.ai_protocol = "openai".to_string();
         }
+        self.data_directory = self.data_directory.trim().to_string();
+        self.resolved_data_directory = self.resolved_data_directory.trim().to_string();
         self.openai_base_url = self
             .openai_base_url
             .trim()
@@ -131,6 +141,9 @@ impl AppSettings {
         }
         if self.ocr_model.is_empty() {
             self.ocr_model = self.search_model.clone();
+        }
+        if self.resolved_data_directory.is_empty() {
+            self.resolved_data_directory = self.data_directory.clone();
         }
         self
     }

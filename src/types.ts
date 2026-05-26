@@ -1,3 +1,5 @@
+/* 前端共享类型定义，和 Rust models.rs 基本一一对应。 */
+
 export type ClipboardKind = 'text' | 'image';
 
 export interface ClipboardItem {
@@ -48,6 +50,8 @@ export interface AppSettings {
   interceptWinV: boolean;
   runAtStartup: boolean;
   hideConsoleWindow: boolean;
+  dataDirectory: string;
+  resolvedDataDirectory: string;
   aiProtocol: 'openai' | 'anthropic';
   openaiBaseUrl: string;
   anthropicBaseUrl: string;
@@ -55,4 +59,10 @@ export interface AppSettings {
   searchModel: string;
   ocrModel: string;
   language: 'zh' | 'en';
+}
+
+export interface DataDirectoryChangeResult {
+  settings: AppSettings;
+  message: string;
+  restartRequired: boolean;
 }

@@ -2,6 +2,8 @@
 
 Windows intelligent clipboard manager built with Tauri, React, TypeScript, Rust, and SQLite.
 
+Learning-oriented repo notes live in `docs/project-retrospective-and-structure.md`.
+
 ## Features
 
 - Clipboard history for text and images, stored locally in SQLite.
@@ -14,6 +16,7 @@ Windows intelligent clipboard manager built with Tauri, React, TypeScript, Rust,
 - OCR text paste is separate: clicking the OCR text panel pastes text; clicking the rest of the image record pastes the image.
 - AI settings panel for OpenAI-compatible or Anthropic-compatible APIs, base URLs, API key, search model, and OCR model.
 - Chinese/English UI language setting.
+- Custom data directory setting for the SQLite database, image cache, and future local data files, with restart-time migration.
 - System tray controls: show app, switch native/software `Win+V`, restart app, quit.
 - Current-user startup support through the Windows Startup folder shortcut; legacy registry Run entries are cleaned up automatically.
 - Startup launches with a hidden `--startup` mode, hidden shortcut show command, and no-window restart behavior so login does not open the main app window or a console.
@@ -21,9 +24,9 @@ Windows intelligent clipboard manager built with Tauri, React, TypeScript, Rust,
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.1.1-windows-x64.zip` from GitHub Releases.
-2. Extract the zip to a stable folder, for example `D:\Apps\SmartClipboard`.
-3. Run `smart_clipboard.exe`.
+1. Download `SmartClipboard-v0.1.2-windows-x64.zip` from GitHub Releases.
+2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
+3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
 5. In Settings, configure API fields if AI search, AI archive, or OCR is needed.
 
@@ -41,6 +44,7 @@ Do not run the exe directly from inside the zip file. Extract it first so startu
 - `API key`: paste your provider key locally.
 - `Search / archive model`: model used by AI search and AI archive.
 - `OCR model`: model used for image OCR.
+- `File save path`: optional custom directory for the local database, image cache, and later data files. Use `Choose folder`, or type a path manually, then save. The app will ask for confirmation, migrate existing data, and restart.
 
 ## Huorong / Security Software Notes
 
@@ -55,7 +59,7 @@ The startup shortcut should point to `smart_clipboard.exe` and include the `--st
 
 ## Local Data
 
-App data is stored under the Tauri app data directory for identifier `com.local.smartclipboard`, usually:
+By default, app data is stored under the Tauri app data directory for identifier `com.local.smartclipboard`, usually:
 
 `%APPDATA%\com.local.smartclipboard\`
 
@@ -63,6 +67,15 @@ Important files include:
 
 - `smart_clipboard.sqlite`: local settings, history metadata, folders, quick pool.
 - `images\`: image clipboard history files.
+- `storage-bootstrap.json`: a tiny bootstrap file kept in `%APPDATA%\com.local.smartclipboard\` so the app can find a custom data directory before opening SQLite.
+
+If `File save path` is set in Settings, `smart_clipboard.sqlite`, `images\`, and future local data files are moved to that custom directory. For a portable-style local setup, this project has been tested with:
+
+`H:\Clipboard\SmartClipboard.exe`
+
+`H:\Clipboard\data\smart_clipboard.sqlite`
+
+The app still keeps `storage-bootstrap.json` in AppData because the database path must be known before the database can be opened.
 
 API keys are stored locally in this SQLite database. Do not upload your personal database to GitHub.
 
@@ -94,6 +107,8 @@ Build release exe:
 npm run tauri -- build
 ```
 
+For Rust-only `cargo test` runs, `src-tauri/build.rs` will auto-create a tiny placeholder `dist/` directory if it is missing. Real app UI assets still come from `npm run build`.
+
 The release exe is generated at:
 
 `src-tauri\target\release\smart_clipboard.exe`
@@ -105,7 +120,7 @@ The release exe is generated at:
 ```powershell
 git init
 git add README.md package.json package-lock.json tsconfig.json vite.config.ts index.html src src-tauri docs scripts
-git commit -m "Release Smart Clipboard v0.1.1"
+git commit -m "Release Smart Clipboard v0.1.2"
 git branch -M main
 git remote add origin https://github.com/<your-name>/<repo-name>.git
 git push -u origin main
@@ -116,8 +131,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `smart_clipboard.exe` and this README.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.1.1`.
-5. Upload `SmartClipboard-v0.1.1-windows-x64.zip`.
+4. Tag version: `v0.1.2`.
+5. Upload `SmartClipboard-v0.1.2-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

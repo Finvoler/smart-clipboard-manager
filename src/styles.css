@@ -1,3 +1,5 @@
+/* 全局样式与主界面布局样式。大多数视觉结构都集中在这个文件里。 */
+
 :root {
   color: #1e2528;
   background: #f5f7f5;
@@ -837,6 +839,34 @@ button:disabled:active {
   padding: 0 8px;
   color: #1e2528;
   background: #ffffff;
+}
+
+.pathPickerRow {
+  display: grid;
+  gap: 6px;
+}
+
+.pathPickerActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.pathPickerActions button {
+  min-height: 30px;
+  border: 1px solid #c8d2cc;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.pathPickerActions button:hover {
+  background: #e3eee7;
+}
+
+.fieldHelp {
+  color: #6e7c75;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .secretRow {

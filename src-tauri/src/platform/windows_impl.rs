@@ -1,3 +1,11 @@
+//! Windows 系统集成实现。
+//!
+//! 这里集中处理四类底层能力：
+//! 1. 剪贴板监听和入库
+//! 2. Win+V 键盘钩子与窗口切换
+//! 3. 开机启动快捷方式
+//! 4. 前台窗口恢复与模拟粘贴
+
 use std::{
     borrow::Cow,
     fs, io,
@@ -106,7 +114,7 @@ pub fn start_system_integrations(app: AppHandle, state: &AppState) {
 }
 
 pub fn set_run_at_startup(_app: &AppHandle, enable: bool) -> Result<(), String> {
-    // Always remove any legacy registry Run value left by older builds.
+    // 永远先清掉旧版留下的 Run 键，避免“快捷方式 + 注册表”双启动。
     let _ = remove_startup_registry_value();
     if enable {
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -175,6 +183,7 @@ fn create_startup_shortcut(exe: &Path, shortcut_path: &Path) -> Result<(), Strin
             }
             link.SetDescription(&HSTRING::from("Smart Clipboard Manager"))?;
             link.SetIconLocation(&HSTRING::from(exe.to_string_lossy().as_ref()), 0)?;
+            // 用 SW_HIDE 明确要求 Shell 隐藏启动窗口，避免登录时出现可见终端。
             link.SetShowCmd(SW_HIDE)?;
             let persist_file: IPersistFile = link.cast()?;
             persist_file.Save(
@@ -482,6 +491,9 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
     if is_win_key {
         if is_down {
+            // 我们先吞掉 Win 键本身，后面再决定：
+            // 1. 如果用户按的是 Win+V，就保持拦截并弹出本应用。
+            // 2. 如果用户按的是其它 Win 组合键，就把 Win 键补发回系统。
             runtime.win_down.store(true, Ordering::SeqCst);
             runtime.win_forwarded.store(false, Ordering::SeqCst);
             runtime.smart_win_v_active.store(false, Ordering::SeqCst);
@@ -519,12 +531,14 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
     if runtime.win_down.load(Ordering::SeqCst) && is_down {
         if is_v_key && !runtime.win_forwarded.load(Ordering::SeqCst) {
+            // 真正命中 Win+V：不把组合键交给系统，而是弹出我们的面板。
             runtime.smart_win_v_active.store(true, Ordering::SeqCst);
             show_main_window_from_hotkey(runtime);
             return LRESULT(1);
         }
 
         if !runtime.win_forwarded.load(Ordering::SeqCst) {
+            // 直到出现“不是 V 的第二个键”时，才把 Win 键补发，交还给原生快捷键流程。
             let held_vk = runtime.held_win_vk.load(Ordering::SeqCst);
             let win_key = VIRTUAL_KEY(
                 (if held_vk == 0 {
@@ -542,6 +556,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 }
 
 fn reset_win_hotkey_state(runtime: &HotkeyRuntime) {
+    // 任何异常路径都应该能回到这四个原子状态的初始值，否则最容易出现“Win 键卡住”。
     runtime.win_down.store(false, Ordering::SeqCst);
     runtime.win_forwarded.store(false, Ordering::SeqCst);
     runtime.smart_win_v_active.store(false, Ordering::SeqCst);

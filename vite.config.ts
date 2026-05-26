@@ -1,3 +1,5 @@
+/* Vite 开发配置：固定 1420 端口给 Tauri dev 使用，并忽略 Rust 目录的无关热更新。 */
+
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 

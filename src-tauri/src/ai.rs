@@ -1,3 +1,8 @@
+//! AI 适配层。
+//!
+//! 负责和 OpenAI 兼容 / Anthropic 兼容接口对话，提供模型列表、语义搜索、
+//! 分类归档和 OCR 四类能力。这里刻意保持“按需触发”，不做后台轮询。
+
 use std::fs;
 
 use base64::{engine::general_purpose, Engine as _};

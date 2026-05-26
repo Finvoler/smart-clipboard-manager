@@ -1,3 +1,8 @@
+//! 前端到后端的 IPC 命令层。
+//!
+//! 这里尽量只做参数编排、状态锁和错误转换，真正的数据读写在 db.rs，
+//! 真正的系统交互在 platform/*，真正的 AI 请求在 ai.rs。
+
 use std::sync::atomic::Ordering;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -7,7 +12,8 @@ use crate::{
     ai,
     db::AppError,
     models::{AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion},
-    platform, sync_tray_menu, AppState,
+    platform, schedule_data_dir_change, sync_tray_menu, validate_data_dir_change, AppState,
+    DataDirectoryChangeResult,
 };
 
 #[tauri::command]
@@ -202,11 +208,13 @@ pub fn get_quick_suggestions(state: State<'_, AppState>) -> Result<Vec<QuickSugg
 
 #[tauri::command]
 pub fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
-    state
+    let mut settings = state
         .settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())
-        .map(|settings| settings.clone())
+        .map(|settings| settings.clone())?;
+    settings.resolved_data_directory = crate::current_data_dir_string(&state)?;
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -216,6 +224,7 @@ pub fn save_app_settings(
     state: State<'_, AppState>,
 ) -> Result<AppSettings, String> {
     settings.app_enabled = true;
+    settings.resolved_data_directory.clear();
     let saved = {
         let db = state
             .db
@@ -228,9 +237,67 @@ pub fn save_app_settings(
     platform::set_hide_console_window(saved.hide_console_window)?;
     sync_tray_menu(&app, saved.intercept_win_v)?;
     if let Ok(mut cached) = state.settings.lock() {
+        let mut cached_saved = saved.clone();
+        cached_saved.resolved_data_directory = crate::current_data_dir_string(&state)?;
+        *cached = cached_saved;
+    }
+    let mut response = saved;
+    response.resolved_data_directory = crate::current_data_dir_string(&state)?;
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn change_data_directory(
+    mut settings: AppSettings,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<DataDirectoryChangeResult, String> {
+    settings.app_enabled = true;
+    settings.data_directory = settings.data_directory.trim().to_string();
+    settings.resolved_data_directory.clear();
+    validate_data_dir_change(
+        &app,
+        if settings.data_directory.is_empty() {
+            None
+        } else {
+            Some(settings.data_directory.as_str())
+        },
+    )?;
+
+    let saved = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|_| "database lock poisoned".to_string())?;
+        db.save_app_settings(settings).map_err(String::from)?
+    };
+
+    schedule_data_dir_change(
+        &app,
+        if saved.data_directory.trim().is_empty() {
+            None
+        } else {
+            Some(saved.data_directory.as_str())
+        },
+    )?;
+
+    if let Ok(mut cached) = state.settings.lock() {
         *cached = saved.clone();
     }
-    Ok(saved)
+
+    let mut response_settings = saved;
+    response_settings.resolved_data_directory = crate::current_data_dir_string(&state)?;
+    Ok(DataDirectoryChangeResult {
+        settings: response_settings,
+        message: "Data directory updated. Smart Clipboard is restarting to migrate existing data."
+            .to_string(),
+        restart_required: true,
+    })
+}
+
+#[tauri::command]
+pub fn restart_application(app: AppHandle) -> Result<(), String> {
+    crate::restart_app(&app, "manual-restart")
 }
 
 #[tauri::command]

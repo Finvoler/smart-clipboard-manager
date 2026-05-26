@@ -1,3 +1,8 @@
+//! 非 Windows 平台的占位实现。
+//!
+//! 这个项目的系统集成是为 Windows 写的；fallback 的目标不是完整功能，
+//! 而是保证其它平台上至少能编译、能看前端、能做纯 UI 开发。
+
 use std::{
     borrow::Cow,
     path::Path,
