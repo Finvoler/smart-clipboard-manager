@@ -118,11 +118,7 @@ impl Database {
         self.ensure_column("items", "image_hash", "TEXT")?;
         self.ensure_column("items", "ocr_text", "TEXT")?;
         self.ensure_column("app_settings", "language", "TEXT NOT NULL DEFAULT 'zh'")?;
-        self.ensure_column(
-            "app_settings",
-            "data_directory",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
+        self.ensure_column("app_settings", "data_directory", "TEXT NOT NULL DEFAULT ''")?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_items_image_hash ON items(image_hash)",
             [],

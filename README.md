@@ -21,11 +21,11 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 - System tray controls: show app, switch native/software `Win+V`, restart app, quit.
 - Current-user startup support through the Windows Startup folder shortcut; legacy registry Run entries are cleaned up automatically.
 - Startup launches with a hidden `--startup` mode, hidden shortcut show command, and no-window restart behavior so login does not open the main app window or a console.
-- Best-effort auto restart on Rust panic.
+- Best-effort auto restart on Rust panic, disabled once the app is already exiting.
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.1.6-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.1.7-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -129,7 +129,7 @@ The release exe is generated at:
 ```powershell
 git init
 git add README.md package.json package-lock.json tsconfig.json vite.config.ts index.html src src-tauri docs scripts
-git commit -m "Release Smart Clipboard v0.1.6"
+git commit -m "Release Smart Clipboard v0.1.7"
 git branch -M main
 git remote add origin https://github.com/<your-name>/<repo-name>.git
 git push -u origin main
@@ -140,8 +140,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `smart_clipboard.exe` and this README.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.1.6`.
-5. Upload `SmartClipboard-v0.1.6-windows-x64.zip`.
+4. Tag version: `v0.1.7`.
+5. Upload `SmartClipboard-v0.1.7-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

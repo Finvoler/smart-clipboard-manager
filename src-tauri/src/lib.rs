@@ -14,7 +14,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use db::Database;
@@ -27,6 +30,8 @@ use tauri::{
 };
 
 const STARTUP_ARG: &str = "--startup";
+
+static APP_EXITING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -118,7 +123,8 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
+                if window.label() == "main" && !APP_EXITING.load(Ordering::SeqCst) {
+                    // 用户点 X 时隐藏到托盘；真正退出/重启/系统关机时放行，避免拖住 Windows 关机流程。
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -165,12 +171,21 @@ pub fn run() {
             sync_initial_window_visibility(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run Smart Clipboard");
+        .build(tauri::generate_context!())
+        .expect("failed to build Smart Clipboard")
+        .run(|_app, event| match event {
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                APP_EXITING.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        });
 }
 
 fn bootstrap_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let config_dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
     fs::create_dir_all(&config_dir).map_err(|error| error.to_string())?;
     Ok(config_dir.join("storage-bootstrap.json"))
 }
@@ -206,9 +221,7 @@ fn resolve_effective_data_dir(
             return Ok(PathBuf::from(trimmed));
         }
     }
-    app.path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())
+    app.path().app_data_dir().map_err(|error| error.to_string())
 }
 
 fn run_pending_migration(bootstrap: &mut BootstrapConfig) -> Result<(), String> {
@@ -249,7 +262,10 @@ fn run_pending_migration(bootstrap: &mut BootstrapConfig) -> Result<(), String> 
 fn copy_app_data_files(from: &Path, to: &Path) -> Result<(), String> {
     fs::create_dir_all(to).map_err(|error| error.to_string())?;
     // 只迁移应用数据文件，允许 exe 与数据库位于同一目录而不误动程序本体。
-    copy_if_exists(&from.join("smart_clipboard.sqlite"), &to.join("smart_clipboard.sqlite"))?;
+    copy_if_exists(
+        &from.join("smart_clipboard.sqlite"),
+        &to.join("smart_clipboard.sqlite"),
+    )?;
     copy_if_exists(
         &from.join("smart_clipboard.sqlite-wal"),
         &to.join("smart_clipboard.sqlite-wal"),
@@ -273,7 +289,9 @@ fn copy_if_exists(from: &Path, to: &Path) -> Result<(), String> {
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    fs::copy(from, to).map(|_| ()).map_err(|error| error.to_string())
+    fs::copy(from, to)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
@@ -324,7 +342,11 @@ fn rewrite_migrated_image_paths(
     connection
         .execute(
             "UPDATE items SET image_path = REPLACE(image_path, ?1, ?2) WHERE image_path LIKE ?3",
-            rusqlite::params![old_prefix, new_prefix, format!("{}%", old_root.to_string_lossy())],
+            rusqlite::params![
+                old_prefix,
+                new_prefix,
+                format!("{}%", old_root.to_string_lossy())
+            ],
         )
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -370,6 +392,7 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             } else if id == "restart" {
                 let _ = restart_app(app, "manual");
             } else if id == "quit" {
+                APP_EXITING.store(true, Ordering::SeqCst);
                 app.exit(0);
             }
         });
@@ -435,6 +458,7 @@ fn win_v_tray_label(intercept_win_v: bool) -> &'static str {
 
 fn restart_app(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
     spawn_replacement_process(reason)?;
+    APP_EXITING.store(true, Ordering::SeqCst);
     app.exit(0);
     Ok(())
 }
@@ -449,12 +473,16 @@ pub(crate) fn schedule_data_dir_change(
     let target_dir = if let Some(path) = next_data_dir {
         let trimmed = path.trim();
         if trimmed.is_empty() {
-            app.path().app_data_dir().map_err(|error| error.to_string())?
+            app.path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?
         } else {
             PathBuf::from(trimmed)
         }
     } else {
-        app.path().app_data_dir().map_err(|error| error.to_string())?
+        app.path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?
     };
 
     if current_dir == target_dir {
@@ -487,12 +515,16 @@ pub(crate) fn validate_data_dir_change(
     let target_dir = if let Some(path) = next_data_dir {
         let trimmed = path.trim();
         if trimmed.is_empty() {
-            app.path().app_data_dir().map_err(|error| error.to_string())?
+            app.path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?
         } else {
             PathBuf::from(trimmed)
         }
     } else {
-        app.path().app_data_dir().map_err(|error| error.to_string())?
+        app.path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?
     };
 
     if current_dir == target_dir {
@@ -599,16 +631,16 @@ fn spawn_replacement_process(reason: &str) -> Result<(), String> {
     let mut cmd = Command::new(exe);
     cmd.env("SMART_CLIPBOARD_RESTART_REASON", reason)
         .env("SMART_CLIPBOARD_RESTARTED", "1");
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    cmd.spawn().map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn install_auto_restart_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         previous(panic_info);
-        if std::env::var_os("SMART_CLIPBOARD_RESTARTED").is_none() {
+        if std::env::var_os("SMART_CLIPBOARD_RESTARTED").is_none()
+            && !APP_EXITING.load(Ordering::SeqCst)
+        {
             let _ = spawn_replacement_process("panic");
         }
     }));
@@ -678,15 +710,15 @@ mod tests {
         let temp = TempTestDir::new();
         fs::write(temp.path.join("SmartClipboard.exe"), b"exe").expect("failed to write test file");
 
-        assert!(
-            !target_dir_has_conflicting_app_data(&temp.path).expect("unexpected validation failure")
-        );
+        assert!(!target_dir_has_conflicting_app_data(&temp.path)
+            .expect("unexpected validation failure"));
     }
 
     #[test]
     fn rejects_target_dir_with_existing_database() {
         let temp = TempTestDir::new();
-        fs::write(temp.path.join("smart_clipboard.sqlite"), b"db").expect("failed to write db file");
+        fs::write(temp.path.join("smart_clipboard.sqlite"), b"db")
+            .expect("failed to write db file");
 
         assert!(
             target_dir_has_conflicting_app_data(&temp.path).expect("unexpected validation failure")
@@ -700,7 +732,8 @@ mod tests {
         fs::write(source.path.join("SmartClipboard.exe"), b"exe").expect("failed to write exe");
         fs::write(source.path.join("smart_clipboard.sqlite"), b"db").expect("failed to write db");
         fs::create_dir_all(source.path.join("images")).expect("failed to create images dir");
-        fs::write(source.path.join("images").join("item.png"), b"png").expect("failed to write image");
+        fs::write(source.path.join("images").join("item.png"), b"png")
+            .expect("failed to write image");
 
         copy_app_data_files(&source.path, &target.path).expect("failed to copy app data");
         remove_app_data_files(&source.path);
