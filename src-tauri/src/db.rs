@@ -10,7 +10,11 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::{
-    models::{AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion},
+    models::{
+        AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion,
+        DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OPENAI_BASE_URL, LEGACY_ANTHROPIC_BASE_URL,
+        LEGACY_OPENAI_BASE_URL,
+    },
     quick_pool::extract_candidates,
 };
 
@@ -124,6 +128,34 @@ impl Database {
             [],
         )?;
         self.ensure_settings_row()?;
+        self.migrate_legacy_xiaomimimo_base_urls()?;
+        Ok(())
+    }
+
+    fn migrate_legacy_xiaomimimo_base_urls(&self) -> Result<(), AppError> {
+        self.conn.execute(
+            "UPDATE app_settings
+             SET openai_base_url = CASE openai_base_url
+                    WHEN ?1 THEN ?2
+                    ELSE openai_base_url
+                 END,
+                 anthropic_base_url = CASE anthropic_base_url
+                    WHEN ?3 THEN ?4
+                    ELSE anthropic_base_url
+                 END,
+                 updated_at = CASE
+                    WHEN openai_base_url = ?1 OR anthropic_base_url = ?3 THEN ?5
+                    ELSE updated_at
+                 END
+             WHERE id = 1",
+            params![
+                LEGACY_OPENAI_BASE_URL,
+                DEFAULT_OPENAI_BASE_URL,
+                LEGACY_ANTHROPIC_BASE_URL,
+                DEFAULT_ANTHROPIC_BASE_URL,
+                now_ts(),
+            ],
+        )?;
         Ok(())
     }
 
