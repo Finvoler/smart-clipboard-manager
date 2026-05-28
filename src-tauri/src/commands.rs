@@ -87,7 +87,7 @@ pub fn get_history(
         .lock()
         .map_err(|_| "database lock poisoned".to_string())?;
     db.cleanup_retention().map_err(String::from)?;
-    db.get_history(limit.unwrap_or(120), offset.unwrap_or(0))
+    db.get_history(limit.unwrap_or(0), offset.unwrap_or(0))
         .map_err(String::from)
 }
 

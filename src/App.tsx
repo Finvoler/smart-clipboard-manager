@@ -15,7 +15,7 @@ import remarkMath from 'remark-math';
 import { open } from '@tauri-apps/plugin-dialog';
 import { call, fileSrc, onNewItem, onQuickSuggestionDetected, type AppSettings, type ClipboardItem, type DataDirectoryChangeResult, type Folder, type QuickItem, type QuickSuggestion } from './tauriClient';
 
-const DEFAULT_LIMIT = 120;
+const DEFAULT_LIMIT = 0;
 
 type SectionKey = 'api' | 'starred' | 'folders' | 'quickTools' | 'quickPending' | 'quickAccepted';
 type NoticeTone = 'info' | 'loading' | 'success' | 'error';
@@ -814,7 +814,7 @@ export function App() {
 
         <SidebarSection title={copy.starred} icon={<Star size={15} />} open={openSections.starred} onToggle={() => toggleSection('starred')}>
           {items.filter((item) => item.isStar).length === 0 ? <div className="emptyHint">{copy.noStarred}</div> : null}
-          {items.filter((item) => item.isStar).slice(0, 8).map((item) => (
+          {items.filter((item) => item.isStar).map((item) => (
             <div key={item.id} className="starredRow">
               <button className="sideItem starredSideItem" onClick={() => pasteClipboardItem(item)} disabled={isPending(`paste:item:${item.id}`) || isPending(`delete:${item.id}`)}>{item.preview}</button>
               <button className="iconButton small danger starredDeleteButton" onClick={(event) => stopAndRun(event, () => void removeItem(item.id))} disabled={isPending(`delete:${item.id}`)} title={copy.deleteStarredRecord}>
@@ -1119,7 +1119,7 @@ function FolderDropTarget({ folder, items, copy, folderDeleting, isItemPastePend
   const [open, setOpen] = useState(false);
   const [moveValue, setMoveValue] = useState('');
   const [movePending, setMovePending] = useState(false);
-  const folderItems = items.filter((item) => item.folderId === folder.id).slice(0, 5);
+  const folderItems = items.filter((item) => item.folderId === folder.id);
   return (
     <div className="folderBlock">
       <div className="folderHeaderRow">

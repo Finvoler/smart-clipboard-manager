@@ -25,7 +25,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.1.8-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.1.9-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -40,8 +40,8 @@ Do not run the exe directly from inside the zip file. Extract it first so startu
 - `Hide console window`: kept for compatibility; release builds are compiled as a Windows GUI app, and startup shortcuts use hidden `--startup` mode.
 - `Language`: choose Chinese or English UI.
 - `Protocol`: choose OpenAI compatible or Anthropic compatible.
-- `OpenAI base URL`: default is `https://token-plan-cn.xiaomimimo.com/v1`.
-- `Anthropic base URL`: default is `https://token-plan-cn.xiaomimimo.com/anthropic`.
+- `OpenAI base URL`: default is `https://api.xiaomimimo.com/v1`.
+- `Anthropic base URL`: default is `https://api.xiaomimimo.com/anthropic`.
 - `API key`: paste your provider key locally.
 - `Search / archive model`: model used by AI search and AI archive.
 - `OCR model`: model used for image OCR.
@@ -129,7 +129,7 @@ The release exe is generated at:
 ```powershell
 git init
 git add README.md package.json package-lock.json tsconfig.json vite.config.ts index.html src src-tauri docs scripts
-git commit -m "Release Smart Clipboard v0.1.8"
+git commit -m "Release Smart Clipboard v0.1.9"
 git branch -M main
 git remote add origin https://github.com/<your-name>/<repo-name>.git
 git push -u origin main
@@ -140,8 +140,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `smart_clipboard.exe` and this README.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.1.8`.
-5. Upload `SmartClipboard-v0.1.8-windows-x64.zip`.
+4. Tag version: `v0.1.9`.
+5. Upload `SmartClipboard-v0.1.9-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

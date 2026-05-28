@@ -4,10 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_OPENAI_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/v1";
-pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/anthropic";
-pub const LEGACY_OPENAI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
-pub const LEGACY_ANTHROPIC_BASE_URL: &str = "https://api.xiaomimimo.com/anthropic";
+pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
+pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.xiaomimimo.com/anthropic";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,12 +123,6 @@ impl AppSettings {
             _ => "zh".to_string(),
         };
 
-        if self.openai_base_url == LEGACY_OPENAI_BASE_URL {
-            self.openai_base_url = DEFAULT_OPENAI_BASE_URL.to_string();
-        }
-        if self.anthropic_base_url == LEGACY_ANTHROPIC_BASE_URL {
-            self.anthropic_base_url = DEFAULT_ANTHROPIC_BASE_URL.to_string();
-        }
         self.search_model = normalize_model_name(&self.search_model);
         self.ocr_model = normalize_model_name(&self.ocr_model);
 

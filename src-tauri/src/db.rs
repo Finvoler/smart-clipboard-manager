@@ -10,11 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::{
-    models::{
-        AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion,
-        DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_OPENAI_BASE_URL, LEGACY_ANTHROPIC_BASE_URL,
-        LEGACY_OPENAI_BASE_URL,
-    },
+    models::{AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion},
     quick_pool::extract_candidates,
 };
 
@@ -128,34 +124,6 @@ impl Database {
             [],
         )?;
         self.ensure_settings_row()?;
-        self.migrate_legacy_xiaomimimo_base_urls()?;
-        Ok(())
-    }
-
-    fn migrate_legacy_xiaomimimo_base_urls(&self) -> Result<(), AppError> {
-        self.conn.execute(
-            "UPDATE app_settings
-             SET openai_base_url = CASE openai_base_url
-                    WHEN ?1 THEN ?2
-                    ELSE openai_base_url
-                 END,
-                 anthropic_base_url = CASE anthropic_base_url
-                    WHEN ?3 THEN ?4
-                    ELSE anthropic_base_url
-                 END,
-                 updated_at = CASE
-                    WHEN openai_base_url = ?1 OR anthropic_base_url = ?3 THEN ?5
-                    ELSE updated_at
-                 END
-             WHERE id = 1",
-            params![
-                LEGACY_OPENAI_BASE_URL,
-                DEFAULT_OPENAI_BASE_URL,
-                LEGACY_ANTHROPIC_BASE_URL,
-                DEFAULT_ANTHROPIC_BASE_URL,
-                now_ts(),
-            ],
-        )?;
         Ok(())
     }
 
@@ -320,12 +288,22 @@ impl Database {
     }
 
     pub fn get_history(&self, limit: i64, offset: i64) -> Result<Vec<ClipboardItem>, AppError> {
-        let mut statement = self.conn.prepare(
-    "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
-       FROM items ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
-    )?;
-        let rows = statement.query_map(params![limit, offset], row_to_item)?;
-        collect_rows(rows)
+        let offset = offset.max(0);
+        if limit <= 0 {
+            let mut statement = self.conn.prepare(
+                "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+                 FROM items ORDER BY created_at DESC LIMIT -1 OFFSET ?1",
+            )?;
+            let rows = statement.query_map(params![offset], row_to_item)?;
+            collect_rows(rows)
+        } else {
+            let mut statement = self.conn.prepare(
+                "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+                 FROM items ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = statement.query_map(params![limit, offset], row_to_item)?;
+            collect_rows(rows)
+        }
     }
 
     fn find_recent_duplicate_text_item(
@@ -1134,6 +1112,40 @@ mod tests {
         db.cleanup_retention().unwrap();
 
         assert!(db.get_item(&item.id).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn unlimited_history_keeps_older_starred_and_foldered_records_visible() {
+        let temp =
+            std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let db_path = temp.join("test.sqlite");
+        let image_dir = temp.join("images");
+        let mut db = Database::open(db_path, image_dir).unwrap();
+
+        let folder = db.create_folder("Pinned").unwrap();
+        let mut starred_id = String::new();
+        let mut foldered_id = String::new();
+
+        for index in 0..130 {
+            let (item, _) = db.insert_text_item(&format!("history item {index:03}")).unwrap();
+            if index == 5 {
+                starred_id = db.toggle_star(&item.id, true).unwrap().id;
+            }
+            if index == 7 {
+                foldered_id = db
+                    .move_to_folder(&item.id, Some(folder.id.clone()))
+                    .unwrap()
+                    .id;
+            }
+        }
+
+        assert_eq!(db.get_history(120, 0).unwrap().len(), 120);
+
+        let all = db.get_history(0, 0).unwrap();
+        assert_eq!(all.len(), 130);
+        assert!(all.iter().any(|item| item.id == starred_id && item.is_star));
+        assert!(all.iter().any(|item| item.id == foldered_id && item.folder_id.as_deref() == Some(folder.id.as_str())));
         let _ = std::fs::remove_dir_all(temp);
     }
 
