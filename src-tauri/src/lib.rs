@@ -95,6 +95,9 @@ pub fn run() {
             commands::hide_window,
             commands::execute_paste,
             commands::get_history,
+            commands::get_history_light,
+            commands::get_item,
+            commands::get_items_by_ids,
             commands::update_item_text,
             commands::delete_item,
             commands::get_image_data_url,
@@ -117,6 +120,7 @@ pub fn run() {
             commands::test_ai_connection,
             commands::list_ai_models,
             commands::search_local,
+            commands::search_local_light,
             commands::search_ai_semantic,
             commands::trigger_ai_categorize,
             commands::trigger_ocr

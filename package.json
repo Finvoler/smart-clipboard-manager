@@ -1,6 +1,6 @@
 {
   "name": "smart-clipboard-manager",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +13,7 @@
     "rust:test": "cd src-tauri && cargo test"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.3",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/cli": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",

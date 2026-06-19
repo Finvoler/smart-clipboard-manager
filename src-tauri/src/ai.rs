@@ -127,14 +127,26 @@ pub async fn semantic_search(
         })
         .collect::<Vec<_>>();
 
-    let content = complete_text(
-        &settings,
-        &settings.search_model,
-        "You are a permissive local clipboard search assistant. Return compact JSON only with the exact shape {\"ids\":[\"item-id\"]}. Your job is to find clipboard records that are useful for the user's short, fuzzy query. Use broad semantic intent, synonyms, abbreviations, likely entities, and contextual inference. The user may ask relative-time questions such as 刚刚/几分钟前/几小时前/昨天/前几天; never guess from your training date. Use currentUnixSeconds plus each record's createdAtUnix, ageSeconds, ageMinutes, ageHours, and ageText to judge time accurately. If the query asks for webpages, websites, links, URLs, or says words like 网页/网站/链接/网址/url/http/www, include records containing http, https, www, domains, or URL-like text even if the query word is not literally present. If the query is vague, such as 什么药/药名/那个药, infer likely medicine or drug names from the records and include plausible matches. Include exact keyword matches, fuzzy semantic matches, inferred relevant records, and time-relevant records. Do not invent ids. Do not explain. Prefer recall over strictness, but exclude clearly unrelated records.",
-        &format!("currentUnixSeconds: {now}\nUser query: {query}\nClipboard records JSON: {}", Value::Array(payload)),
-    ).await?;
-    let value = parse_json_content(&content)?;
-    let ids = value
+    eprintln!("[AI SEARCH] query={}, records={}", query, records.len());
+    let user_msg = format!("currentUnixSeconds: {now}\nUser query: {query}\nClipboard records JSON: {}", Value::Array(payload));
+    let system_prompt = "You are a permissive local clipboard search assistant. Return compact JSON only with the exact shape {\"ids\":[\"item-id\"]}. Your job is to find clipboard records that are useful for the user's short, fuzzy query. Use broad semantic intent, synonyms, abbreviations, likely entities, and contextual inference. The user may ask relative-time questions such as 刚刚/几分钟前/几小时前/昨天/前几天; never guess from your training date. Use currentUnixSeconds plus each record's createdAtUnix, ageSeconds, ageMinutes, ageHours, and ageText to judge time accurately. If the query asks for webpages, websites, links, URLs, or says words like 网页/网站/链接/网址/url/http/www, include records containing http, https, www, domains, or URL-like text even if the query word is not literally present. If the query is vague, such as 什么药/药名/那个药, infer likely medicine or drug names from the records and include plausible matches. Include exact keyword matches, fuzzy semantic matches, inferred relevant records, and time-relevant records. Do not invent ids. Do not explain. Prefer recall over strictness, but exclude clearly unrelated records.";
+
+    let content = complete_text(&settings, &settings.search_model, system_prompt, &user_msg).await?;
+    eprintln!("[AI SEARCH] raw response ({} chars): {:?}", content.len(), content.chars().take(300).collect::<String>());
+
+    let parsed = match parse_json_content(&content) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[AI SEARCH] first parse failed: {}, retrying with stricter prompt", err);
+            let retry_user = format!("Your previous response was not valid JSON. Return ONLY a JSON object, no explanation, no markdown fences.\n\n{}", user_msg);
+            let retry_system = "Return ONLY valid JSON. No explanation, no markdown fences, no extra text. Shape: {{\"ids\":[\"item-id\"]}}";
+            let retry_content = complete_text(&settings, &settings.search_model, retry_system, &retry_user).await?;
+            eprintln!("[AI SEARCH] retry response ({} chars): {:?}", retry_content.len(), retry_content.chars().take(300).collect::<String>());
+            parse_json_content(&retry_content)?
+        }
+    };
+
+    let ids = parsed
         .get("ids")
         .and_then(|ids| ids.as_array())
         .ok_or_else(|| "AI response must contain an ids array".to_string())?;
@@ -197,14 +209,26 @@ pub async fn categorize(
         })
         .collect::<Vec<_>>();
 
-    let content = complete_text(
-    &settings,
-    &settings.search_model,
-        "You organize clipboard history. Return compact JSON only, with the shape {\"assignments\":[{\"id\":\"item-id\",\"folder\":\"short folder name\"}]}. Prefer existing folders whenever a reasonable match exists; use the exact existing folder name in that case. Create new folders only for broad reusable categories that fit multiple records. Minimize the number of new folders, avoid one-record niche folders, and group related ambiguous records into a small general folder instead of creating many tiny folders. Skip unclear records only when no existing or broad new folder is appropriate. For newly created folder names, use the requested UI language: Chinese for zh and English for en. Existing folder names must remain unchanged.",
-        &format!("Requested folder language: {}\nExisting folders JSON: {}\nUncategorized clipboard records JSON: {}", settings.language, Value::Array(folder_payload), Value::Array(payload)),
-  ).await?;
-    let value = parse_json_content(&content)?;
-    let assignments = value
+    eprintln!("[AI CATEGORIZE] records={}, folders={}", records.len(), existing_folders.len());
+    let user_msg = format!("Requested folder language: {}\nExisting folders JSON: {}\nUncategorized clipboard records JSON: {}", settings.language, Value::Array(folder_payload), Value::Array(payload));
+    let system_prompt = "You organize clipboard history. Return compact JSON only, with the shape {\"assignments\":[{\"id\":\"item-id\",\"folder\":\"short folder name\"}]}. Prefer existing folders whenever a reasonable match exists; use the exact existing folder name in that case. Create new folders only for broad reusable categories that fit multiple records. Minimize the number of new folders, avoid one-record niche folders, and group related ambiguous records into a small general folder instead of creating many tiny folders. Skip unclear records only when no existing or broad new folder is appropriate. For newly created folder names, use the requested UI language: Chinese for zh and English for en. Existing folder names must remain unchanged.";
+
+    let content = complete_text(&settings, &settings.search_model, system_prompt, &user_msg).await?;
+    eprintln!("[AI CATEGORIZE] raw response ({} chars): {:?}", content.len(), content.chars().take(300).collect::<String>());
+
+    let parsed = match parse_json_content(&content) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[AI CATEGORIZE] first parse failed: {}, retrying", err);
+            let retry_user = format!("Your previous response was not valid JSON. Return ONLY a JSON object, no explanation, no markdown fences.\n\n{}", user_msg);
+            let retry_system = "Return ONLY valid JSON. No explanation, no markdown fences. Shape: {{\"assignments\":[{{\"id\":\"item-id\",\"folder\":\"folder name\"}}]}}";
+            let retry_content = complete_text(&settings, &settings.search_model, retry_system, &retry_user).await?;
+            eprintln!("[AI CATEGORIZE] retry response ({} chars): {:?}", retry_content.len(), retry_content.chars().take(300).collect::<String>());
+            parse_json_content(&retry_content)?
+        }
+    };
+
+    let assignments = parsed
         .get("assignments")
         .and_then(|items| items.as_array())
         .ok_or_else(|| "AI response must contain an assignments array".to_string())?;
@@ -287,7 +311,7 @@ async fn complete_openai_text(
 ) -> Result<String, String> {
     let body = serde_json::json!({
       "model": model,
-            "max_completion_tokens": 1200,
+            "max_completion_tokens": 8000,
             "thinking": { "type": "disabled" },
       "messages": [
         { "role": "system", "content": system },
@@ -430,16 +454,33 @@ fn anthropic_messages_url(settings: &AppSettings) -> String {
 }
 
 fn extract_openai_content(value: &Value) -> Result<String, String> {
-    value
+    eprintln!("[AI DEBUG] OpenAI response keys: {:?}", value.as_object().map(|m| m.keys().collect::<Vec<_>>()));
+    let choice = value
         .get("choices")
         .and_then(|choices| choices.as_array())
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(value_to_text)
-        .ok_or_else(|| {
-            "OpenAI-compatible response did not contain choices[0].message.content".to_string()
-        })
+        .and_then(|choices| choices.first());
+
+    let message = choice.and_then(|c| c.get("message"));
+    let content = message.and_then(|m| m.get("content")).and_then(value_to_text);
+    let finish_reason = choice.and_then(|c| c.get("finish_reason")).and_then(|f| f.as_str());
+
+    match &content {
+        Some(text) if !text.is_empty() => {
+            eprintln!("[AI DEBUG] extracted content ({} chars)", text.len());
+            return Ok(text.clone());
+        }
+        _ => {}
+    }
+
+    // Check if thinking model consumed all tokens
+    let reasoning = message.and_then(|m| m.get("reasoning_content")).and_then(value_to_text);
+    if let (Some(reasoning), Some("length")) = (&reasoning, finish_reason) {
+        eprintln!("[AI DEBUG] thinking model hit token limit. reasoning ({} chars): {:?}", reasoning.len(), reasoning.chars().take(200).collect::<String>());
+        return Err("AI model used all tokens for reasoning. Try using a non-thinking model (e.g. mimo-v2-flash) or increase max_completion_tokens.".to_string());
+    }
+
+    eprintln!("[AI DEBUG] no content. finish_reason={:?}, message={:?}", finish_reason, message.map(|m| serde_json::to_string(m).unwrap_or_default().chars().take(300).collect::<String>()));
+    Err("OpenAI-compatible response did not contain choices[0].message.content".to_string())
 }
 
 fn extract_anthropic_content(value: &Value) -> Result<String, String> {
@@ -472,24 +513,147 @@ fn value_to_text(value: &Value) -> Option<String> {
 }
 
 fn parse_json_content(content: &str) -> Result<Value, String> {
-    let trimmed = content
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+    eprintln!("[AI DEBUG] raw content ({} chars): {:?}", content.len(), content.chars().take(500).collect::<String>());
+
+    // Strategy 1: Strip markdown fences and try direct parse
+    let stripped = strip_markdown_fences(content);
+    if let Ok(value) = try_parse_json(stripped) {
+        eprintln!("[AI DEBUG] parse OK via strip+direct");
         return Ok(value);
     }
 
-    let start = trimmed
-        .find('{')
-        .or_else(|| trimmed.find('['))
-        .ok_or_else(|| "AI response did not include JSON".to_string())?;
-    let end = trimmed
-        .rfind('}')
-        .or_else(|| trimmed.rfind(']'))
-        .ok_or_else(|| "AI response JSON was incomplete".to_string())?;
-    serde_json::from_str(&trimmed[start..=end])
-        .map_err(|error| format!("AI response JSON parse failed: {error}"))
+    // Strategy 2: Extract JSON by brace matching (handles text before/after JSON)
+    if let Some(value) = extract_json_by_braces(stripped) {
+        eprintln!("[AI DEBUG] parse OK via brace matching");
+        return Ok(value);
+    }
+
+    // Strategy 3: Try extracting from the raw content (in case fence stripping broke something)
+    if stripped != content.trim() {
+        if let Some(value) = extract_json_by_braces(content.trim()) {
+            eprintln!("[AI DEBUG] parse OK via brace matching on raw");
+            return Ok(value);
+        }
+    }
+
+    // Strategy 4: Last resort - find any valid JSON sub-string by trying progressively smaller slices
+    if let Some(value) = extract_json_by_rfind(stripped) {
+        eprintln!("[AI DEBUG] parse OK via rfind fallback");
+        return Ok(value);
+    }
+
+    Err(format!(
+        "AI response JSON parse failed. Response: {}",
+        content.chars().take(400).collect::<String>()
+    ))
+}
+
+fn strip_markdown_fences(s: &str) -> &str {
+    let s = s.trim();
+    // Handle ```json\n...\n``` and ```\n...\n``` patterns
+    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s)
+        .trim();
+    s.strip_suffix("```").map(|s| s.trim()).unwrap_or(s)
+}
+
+fn try_parse_json(s: &str) -> Result<Value, String> {
+    serde_json::from_str(s).map_err(|e| e.to_string())
+}
+
+fn extract_json_by_braces(s: &str) -> Option<Value> {
+    // Find the first { or [
+    let (start, open_char) = s.char_indices().find(|(_, c)| *c == '{' || *c == '[')?;
+    let close_char = if open_char == '{' { '}' } else { ']' };
+
+    // Count nesting depth, handling strings properly
+    let mut depth = 0i32;
+    let mut end_pos = None;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, c) in s[start..].char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if c == open_char {
+            depth += 1;
+        } else if c == close_char {
+            depth -= 1;
+            if depth == 0 {
+                end_pos = Some(start + i);
+                break;
+            }
+        }
+    }
+
+    let end = end_pos?;
+    let extracted = &s[start..=end];
+
+    // Try parsing the extracted JSON
+    if let Ok(value) = try_parse_json(extracted) {
+        return Some(value);
+    }
+
+    // Try fixing common issues (trailing commas)
+    let fixed = fix_common_json_issues(extracted);
+    try_parse_json(&fixed).ok()
+}
+
+fn extract_json_by_rfind(s: &str) -> Option<Value> {
+    // Find the last } or ] and try to match backwards
+    let end = s.rfind('}').or_else(|| s.rfind(']'))?;
+    let open_char = if s[end..].starts_with('}') { '{' } else { '[' };
+    let close_char = if open_char == '{' { '}' } else { ']' };
+
+    // Scan backwards from end to find matching open
+    let mut depth = 0i32;
+    let mut start_pos = None;
+    let chars: Vec<char> = s[..=end].chars().collect();
+
+    for i in (0..chars.len()).rev() {
+        let c = chars[i];
+        if c == close_char {
+            depth += 1;
+        } else if c == open_char {
+            depth -= 1;
+            if depth == 0 {
+                start_pos = Some(i);
+                break;
+            }
+        }
+    }
+
+    let start = start_pos?;
+    let extracted: String = chars[start..=end].iter().collect();
+
+    if let Ok(value) = try_parse_json(&extracted) {
+        return Some(value);
+    }
+
+    let fixed = fix_common_json_issues(&extracted);
+    try_parse_json(&fixed).ok()
+}
+
+fn fix_common_json_issues(input: &str) -> String {
+    let mut result = input.to_string();
+    while let Some(pos) = result.find(",}") {
+        result.replace_range(pos..pos + 1, "");
+    }
+    while let Some(pos) = result.find(",]") {
+        result.replace_range(pos..pos + 1, "");
+    }
+    result
 }

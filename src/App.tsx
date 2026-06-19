@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Archive, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, CornerDownLeft, Edit3, Folder as FolderIcon, FolderOpen, FolderPlus, Image as ImageIcon, Pin, Power, RefreshCw, Save, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
@@ -230,6 +231,8 @@ export function App() {
   });
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const pendingKeysRef = useRef<Set<string>>(new Set());
+  const scrollParentRef = useRef<HTMLDivElement | null>(null);
+  const aiSearchModeRef = useRef(false);
   const language: Language = settings?.language === 'en' ? 'en' : 'zh';
   const copy = COPY[language];
 
@@ -260,7 +263,7 @@ export function App() {
 
   async function refresh() {
     const [history, folderList, pool, suggestions, appSettings] = await Promise.all([
-      call<ClipboardItem[]>('get_history', { limit: DEFAULT_LIMIT, offset: 0 }),
+      call<ClipboardItem[]>('get_history_light', { limit: DEFAULT_LIMIT, offset: 0 }),
       call<Folder[]>('get_folders'),
       call<QuickItem[]>('get_quick_pool'),
       call<QuickSuggestion[]>('get_quick_suggestions'),
@@ -280,7 +283,10 @@ export function App() {
 
     const cleanups: Array<() => void> = [];
     void onNewItem((item) => {
-      setItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
+      setItems((current) => {
+        if (aiSearchModeRef.current) return current;
+        return [item, ...current.filter((candidate) => candidate.id !== item.id)];
+      });
       setSelectedId(item.id);
     }).then((cleanup) => cleanups.push(cleanup));
 
@@ -328,6 +334,13 @@ export function App() {
     return items.filter((item) => `${item.preview} ${item.content ?? ''} ${item.ocrText ?? ''}`.toLowerCase().includes(keyword));
   }, [aiSearchMode, items, query]);
 
+  const virtualizer = useVirtualizer({
+    count: filteredItems.length,
+    getScrollElement: () => scrollParentRef.current,
+    estimateSize: () => 120,
+    overscan: 5,
+  });
+
   function showStatus(message: string, tone: NoticeTone = 'info') {
     setStatus({ message, tone });
   }
@@ -336,23 +349,25 @@ export function App() {
     setOpenSections((current) => ({ ...current, [key]: !current[key] }));
   }
 
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   async function runLocalSearch(keyword: string) {
-    setQuery(keyword);
     if (!keyword.trim()) {
       await refresh();
       return;
     }
-    const result = await call<ClipboardItem[]>('search_local', { keyword });
+    const result = await call<ClipboardItem[]>('search_local_light', { keyword });
     setItems(result);
     setSelectedId(result[0]?.id ?? null);
   }
 
   function handleSearchChange(value: string) {
-    if (aiSearchMode) {
-      setQuery(value);
-      return;
-    }
-    void runLocalSearch(value);
+    setQuery(value);
+    if (aiSearchMode) return;
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      void runLocalSearch(value);
+    }, 250);
   }
 
   async function clearSearch() {
@@ -366,6 +381,7 @@ export function App() {
   function toggleAiSearchMode() {
     setAiSearchMode((current) => {
       const next = !current;
+      aiSearchModeRef.current = next;
       if (current) {
         setAiSearchRunning(false);
         setStatus(null);
@@ -387,12 +403,10 @@ export function App() {
       showStatus(copy.aiSearching, 'loading');
       try {
         const ids = await call<string[]>('search_ai_semantic', { query });
-        setItems((current) => {
-          const next = current.filter((item) => ids.includes(item.id));
-          setSelectedId(next[0]?.id ?? null);
-          return next;
-        });
-        showStatus(copy.aiFound(ids.length), 'success');
+        const fullItems = await call<ClipboardItem[]>('get_items_by_ids', { ids });
+        setItems(fullItems);
+        setSelectedId(fullItems[0]?.id ?? null);
+        showStatus(copy.aiFound(fullItems.length), 'success');
       } catch (error) {
         showStatus(error instanceof Error ? error.message : String(error), 'error');
       } finally {
@@ -532,7 +546,11 @@ export function App() {
   }
 
   async function pasteClipboardItem(item: ClipboardItem) {
-    await executePaste(item.id, undefined, `paste:item:${item.id}`);
+    if (item.kind === 'text' && item.content) {
+      await executePaste('', item.content, `paste:item:${item.id}`);
+    } else {
+      await executePaste(item.id, undefined, `paste:item:${item.id}`);
+    }
   }
 
   async function acceptSuggestion(id: string, ttl: number) {
@@ -738,72 +756,88 @@ export function App() {
 
         {status ? <StatusLine notice={status} onClose={() => setStatus(null)} /> : null}
 
-        <div className="historyList">
-          {filteredItems.map((item) => (
-            <article
-              key={item.id}
-              className={`historyItem ${selectedId === item.id ? 'selected' : ''}`}
-              onMouseEnter={() => setSelectedId(item.id)}
-              onClick={(event) => pasteFromRecord(event, item)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && editingId !== item.id) {
-                  event.preventDefault();
-                  void pasteClipboardItem(item);
-                }
-              }}
-              tabIndex={0}
-            >
-              <div className="itemHeader">
-                <button className="pasteTarget" onClick={(event) => stopAndRun(event, () => void pasteClipboardItem(item))} disabled={isPending(`paste:item:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.pasteThisItem}>
-                  {item.kind === 'image' ? <ImageIcon size={16} /> : <Clock size={16} />}
-                  <span>{formatTime(item.createdAt)}</span>
-                </button>
-                <div className="itemActions">
-                  <button className="iconButton small" onClick={(event) => stopAndRun(event, () => void toggleStar(item))} disabled={isPending(`star:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.star}>
-                    <Star size={15} fill={item.isStar ? 'currentColor' : 'none'} />
-                  </button>
-                  {item.kind === 'text' ? (
-                    <button
-                      className="iconButton small"
-                      disabled={isPending(`edit:${item.id}`) || isPending(`delete:${item.id}`)}
-                      onClick={(event) => stopAndRun(event, () => {
-                        setEditingId(item.id);
-                        setEditingText(item.content ?? '');
-                      })}
-                      title={copy.editText}
-                    >
-                      <Edit3 size={15} />
-                    </button>
-                  ) : (
-                    <button className={`iconButton small ${isPending(`ocr:${item.id}`) ? 'active loading' : ''}`} onClick={(event) => stopAndRun(event, () => void runOcr(item))} disabled={isPending(`ocr:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.ocrImage} aria-busy={isPending(`ocr:${item.id}`)}>
-                      <Bot size={15} />
-                    </button>
-                  )}
-                  <button className="iconButton small danger" onClick={(event) => stopAndRun(event, () => void removeItem(item.id))} disabled={isPending(`delete:${item.id}`)} title={copy.delete}>
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
+        <div className="historyList" ref={scrollParentRef}>
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const item = filteredItems[virtualRow.index];
+              return (
+                <div
+                  key={item.id}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  <article
+                    className={`historyItem ${selectedId === item.id ? 'selected' : ''}`}
+                    onMouseEnter={() => setSelectedId(item.id)}
+                    onClick={(event) => pasteFromRecord(event, item)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && editingId !== item.id) {
+                        event.preventDefault();
+                        void pasteClipboardItem(item);
+                      }
+                    }}
+                    tabIndex={0}
+                  >
+                    <div className="itemHeader">
+                      <button className="pasteTarget" onClick={(event) => stopAndRun(event, () => void pasteClipboardItem(item))} disabled={isPending(`paste:item:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.pasteThisItem}>
+                        {item.kind === 'image' ? <ImageIcon size={16} /> : <Clock size={16} />}
+                        <span>{formatTime(item.createdAt)}</span>
+                      </button>
+                      <div className="itemActions">
+                        <button className="iconButton small" onClick={(event) => stopAndRun(event, () => void toggleStar(item))} disabled={isPending(`star:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.star}>
+                          <Star size={15} fill={item.isStar ? 'currentColor' : 'none'} />
+                        </button>
+                        {item.kind === 'text' ? (
+                          <button
+                            className="iconButton small"
+                            disabled={isPending(`edit:${item.id}`) || isPending(`delete:${item.id}`)}
+                            onClick={(event) => stopAndRun(event, async () => {
+                              let content = item.content;
+                              if (!content) {
+                                const full = await call<ClipboardItem>('get_item', { id: item.id });
+                                content = full.content ?? '';
+                              }
+                              setEditingId(item.id);
+                              setEditingText(content);
+                            })}
+                            title={copy.editText}
+                          >
+                            <Edit3 size={15} />
+                          </button>
+                        ) : (
+                          <button className={`iconButton small ${isPending(`ocr:${item.id}`) ? 'active loading' : ''}`} onClick={(event) => stopAndRun(event, () => void runOcr(item))} disabled={isPending(`ocr:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.ocrImage} aria-busy={isPending(`ocr:${item.id}`)}>
+                            <Bot size={15} />
+                          </button>
+                        )}
+                        <button className="iconButton small danger" onClick={(event) => stopAndRun(event, () => void removeItem(item.id))} disabled={isPending(`delete:${item.id}`)} title={copy.delete}>
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </div>
 
-              {editingId === item.id ? (
-                <div className="editorBlock">
-                  <textarea value={editingText} disabled={isPending(`edit:${item.id}`)} onChange={(event) => setEditingText(event.target.value)} />
-                  <div className="editorActions">
-                    <button onClick={() => saveEdit(item.id)} disabled={isPending(`edit:${item.id}`)}>{copy.save}</button>
-                    <button onClick={() => setEditingId(null)} disabled={isPending(`edit:${item.id}`)}>{copy.cancel}</button>
-                  </div>
+                    {editingId === item.id ? (
+                      <div className="editorBlock">
+                        <textarea value={editingText} disabled={isPending(`edit:${item.id}`)} onChange={(event) => setEditingText(event.target.value)} />
+                        <div className="editorActions">
+                          <button onClick={() => saveEdit(item.id)} disabled={isPending(`edit:${item.id}`)}>{copy.save}</button>
+                          <button onClick={() => setEditingId(null)} disabled={isPending(`edit:${item.id}`)}>{copy.cancel}</button>
+                        </div>
+                      </div>
+                    ) : item.kind === 'image' ? (
+                      <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
+                    ) : (
+                      <div className="markdownButton" role="button" tabIndex={-1}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeHighlight]}>
+                          {item.content ?? item.preview}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </article>
                 </div>
-              ) : item.kind === 'image' ? (
-                <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
-              ) : (
-                <div className="markdownButton" role="button" tabIndex={-1}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeHighlight]}>
-                    {item.content ?? item.preview}
-                  </ReactMarkdown>
-                </div>
-              )}
-            </article>
-          ))}
+              );
+            })}
+          </div>
         </div>
       </section>
 
@@ -1065,21 +1099,22 @@ function ImagePreview({ item, copy, pasteOcrPending, onPasteOcr }: { item: Clipb
     setExpanded(false);
     if (!item.imagePath) {
       setImageFailed(true);
-      return () => {
-        cancelled = true;
-      };
+      return () => { cancelled = true; };
+    }
+    // If fileSrc already gives us a URL, try loading it first via <img onError>
+    // If that fails, fall back to base64 data URL via IPC
+    if (filePreviewSrc) {
+      return () => { cancelled = true; };
     }
     void call<string>('get_image_data_url', { id: item.id })
       .then((nextSrc) => {
         if (!cancelled && nextSrc) setDataSrc(nextSrc);
       })
       .catch(() => {
-        if (!cancelled && !filePreviewSrc) setImageFailed(true);
+        if (!cancelled) setImageFailed(true);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [item.id, item.imagePath, filePreviewSrc]);
+    return () => { cancelled = true; };
+  }, [item.id, item.imagePath]);
 
   return (
     <div className={`imageCard ${ocrText ? 'withOcr' : ''}`}>
@@ -1093,7 +1128,16 @@ function ImagePreview({ item, copy, pasteOcrPending, onPasteOcr }: { item: Clipb
           title={copy.fullPreview}
           type="button"
         >
-          {src && !imageFailed ? <img src={src} alt={item.preview} onError={() => setImageFailed(true)} /> : <ImageIcon size={42} />}
+          {src && !imageFailed ? <img src={src} alt={item.preview} onError={() => {
+            // If fileSrc URL failed, try base64 fallback
+            if (!dataSrc && item.imagePath) {
+              call<string>('get_image_data_url', { id: item.id })
+                .then((nextSrc) => { if (nextSrc) setDataSrc(nextSrc); })
+                .catch(() => setImageFailed(true));
+            } else {
+              setImageFailed(true);
+            }
+          }} /> : <ImageIcon size={42} />}
         </button>
         <span>{copy.imageDimensions(item.width, item.height)}</span>
       </div>

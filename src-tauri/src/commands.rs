@@ -92,6 +92,47 @@ pub fn get_history(
 }
 
 #[tauri::command]
+pub fn get_history_light(
+    limit: Option<i64>,
+    offset: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ClipboardItem>, String> {
+    let mut db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.cleanup_retention().map_err(String::from)?;
+    db.get_history_light(limit.unwrap_or(0), offset.unwrap_or(0))
+        .map_err(String::from)
+}
+
+#[tauri::command]
+pub fn get_item(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<ClipboardItem, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.get_item(&id)
+        .map_err(String::from)?
+        .ok_or_else(|| "record not found".to_string())
+}
+
+#[tauri::command]
+pub fn get_items_by_ids(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ClipboardItem>, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.get_items_by_ids(&ids).map_err(String::from)
+}
+
+#[tauri::command]
 pub fn update_item_text(
     id: String,
     text: String,
@@ -390,6 +431,18 @@ pub fn search_local(
         .lock()
         .map_err(|_| "database lock poisoned".to_string())?;
     db.search_local(&keyword).map_err(String::from)
+}
+
+#[tauri::command]
+pub fn search_local_light(
+    keyword: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ClipboardItem>, String> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?;
+    db.search_local_light(&keyword).map_err(String::from)
 }
 
 #[tauri::command]

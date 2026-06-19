@@ -46,12 +46,12 @@ use windows::{
             WindowsAndMessaging::{
                 BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW,
                 DispatchMessageW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
-                GetWindowRect, GetWindowThreadProcessId, IsIconic, PostQuitMessage, RegisterClassW,
-                SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CS_HREDRAW,
-                CS_VREDRAW, GUITHREADINFO, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
-                MSG, SW_HIDE, SW_RESTORE, SW_SHOWNORMAL, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
-                WM_SYSKEYUP, WNDCLASSW,
+                GetWindowRect, GetWindowThreadProcessId, IsIconic, KillTimer, PostQuitMessage,
+                RegisterClassW, SetForegroundWindow, SetTimer, SetWindowsHookExW, ShowWindow,
+                TranslateMessage, CS_HREDRAW, CS_VREDRAW, GUITHREADINFO, HHOOK, HWND_MESSAGE,
+                KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, SW_HIDE, SW_RESTORE, SW_SHOWNORMAL,
+                WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY,
+                WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
             },
         },
     },
@@ -66,6 +66,9 @@ const WINDOW_MARGIN: i32 = 10;
 const STARTUP_VALUE_NAME: &str = "SmartClipboardManager";
 const STARTUP_SHORTCUT_NAME: &str = "Smart Clipboard Manager.lnk";
 const STARTUP_ARG: &str = "--startup";
+const CLIPBOARD_DEBOUNCE_TIMER: usize = 1;
+const CLIPBOARD_DEBOUNCE_MS: u32 = 200;
+const PASTE_FOCUS_TIMEOUT_MS: u64 = 120;
 
 static CLIPBOARD_RUNTIME: OnceLock<ClipboardRuntime> = OnceLock::new();
 static HOTKEY_RUNTIME: OnceLock<HotkeyRuntime> = OnceLock::new();
@@ -229,17 +232,19 @@ pub fn paste_text_and_hide(
     clear_hotkey_state();
     hide_main_window(app)?;
 
+    let mut focus_target: Option<HWND> = None;
     if let Some(hwnd) = *last_foreground_window
         .lock()
         .map_err(|_| "foreground window lock poisoned".to_string())?
     {
-        unsafe {
-            let target = HWND(hwnd as *mut _);
-            restore_target_window(target);
-        }
+        let target = HWND(hwnd as *mut _);
+        unsafe { restore_target_window(target) }
+        focus_target = Some(target);
     }
 
-    thread::sleep(Duration::from_millis(140));
+    if let Some(target) = focus_target {
+        wait_for_window_focus(target, PASTE_FOCUS_TIMEOUT_MS);
+    }
     send_ctrl_v();
     Ok(())
 }
@@ -265,19 +270,37 @@ pub fn paste_image_and_hide(
     clear_hotkey_state();
     hide_main_window(app)?;
 
+    let mut focus_target: Option<HWND> = None;
     if let Some(hwnd) = *last_foreground_window
         .lock()
         .map_err(|_| "foreground window lock poisoned".to_string())?
     {
-        unsafe {
-            let target = HWND(hwnd as *mut _);
-            restore_target_window(target);
-        }
+        let target = HWND(hwnd as *mut _);
+        unsafe { restore_target_window(target) }
+        focus_target = Some(target);
     }
 
-    thread::sleep(Duration::from_millis(140));
+    if let Some(target) = focus_target {
+        wait_for_window_focus(target, PASTE_FOCUS_TIMEOUT_MS);
+    }
     send_ctrl_v();
     Ok(())
+}
+
+fn wait_for_window_focus(target: HWND, timeout_ms: u64) {
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    loop {
+        unsafe {
+            if GetForegroundWindow() == target {
+                return;
+            }
+        }
+        if start.elapsed() >= timeout {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 unsafe fn restore_target_window(target: HWND) {
@@ -373,6 +396,12 @@ unsafe extern "system" fn clipboard_wnd_proc(
 ) -> LRESULT {
     match message {
         WM_CLIPBOARDUPDATE => {
+            let _ = KillTimer(hwnd, CLIPBOARD_DEBOUNCE_TIMER);
+            SetTimer(hwnd, CLIPBOARD_DEBOUNCE_TIMER, CLIPBOARD_DEBOUNCE_MS, None);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == CLIPBOARD_DEBOUNCE_TIMER => {
+            let _ = KillTimer(hwnd, CLIPBOARD_DEBOUNCE_TIMER);
             capture_clipboard();
             LRESULT(0)
         }

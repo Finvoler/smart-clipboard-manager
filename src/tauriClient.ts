@@ -49,6 +49,9 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (hasTauri) return invoke<T>(command, args);
 
   if (command === 'get_history') return demoItems as T;
+  if (command === 'get_history_light') return demoItems.map(({ content: _content, ...rest }) => rest) as T;
+  if (command === 'get_item') return (demoItems.find((entry) => entry.id === args?.id) ?? demoItems[0]) as T;
+  if (command === 'get_items_by_ids') return (args?.ids as string[]).map((id: string) => demoItems.find((entry) => entry.id === id) ?? demoItems[0]).filter(Boolean) as T;
   if (command === 'get_folders') return [] as T;
   if (command === 'create_folder') return { id: 'demo-folder', name: String(args?.name ?? 'Demo'), createdAt: Math.floor(Date.now() / 1000) } as T;
   if (command === 'delete_folder') return undefined as T;
@@ -81,6 +84,7 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   }
   if (command === 'get_image_data_url') return '' as T;
   if (command === 'search_local') return demoItems as T;
+  if (command === 'search_local_light') return demoItems.map(({ content: _content, ...rest }) => rest) as T;
   if (command === 'hide_window') return undefined as T;
   if (command === 'execute_paste') return undefined as T;
   throw new Error(`Tauri runtime is unavailable for ${command}`);

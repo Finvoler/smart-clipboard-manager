@@ -42,6 +42,10 @@ impl Database {
             "
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA cache_size = -20000;
+      PRAGMA temp_store = MEMORY;
+      PRAGMA mmap_size = 268435456;
 
       CREATE TABLE IF NOT EXISTS folders (
         id TEXT PRIMARY KEY,
@@ -304,6 +308,41 @@ impl Database {
             let rows = statement.query_map(params![limit, offset], row_to_item)?;
             collect_rows(rows)
         }
+    }
+
+    pub fn get_history_light(&self, limit: i64, offset: i64) -> Result<Vec<ClipboardItem>, AppError> {
+        let offset = offset.max(0);
+        if limit <= 0 {
+            let mut statement = self.conn.prepare(
+                "SELECT id, kind, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+                 FROM items ORDER BY created_at DESC LIMIT -1 OFFSET ?1",
+            )?;
+            let rows = statement.query_map(params![offset], row_to_item_light)?;
+            collect_rows(rows)
+        } else {
+            let mut statement = self.conn.prepare(
+                "SELECT id, kind, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+                 FROM items ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = statement.query_map(params![limit, offset], row_to_item_light)?;
+            collect_rows(rows)
+        }
+    }
+
+    pub fn get_items_by_ids(&self, ids: &[String]) -> Result<Vec<ClipboardItem>, AppError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+             FROM items WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map(params.as_slice(), row_to_item)?;
+        collect_rows(rows)
     }
 
     fn find_recent_duplicate_text_item(
@@ -652,6 +691,16 @@ impl Database {
         collect_rows(rows)
     }
 
+    pub fn search_local_light(&self, keyword: &str) -> Result<Vec<ClipboardItem>, AppError> {
+        let like = format!("%{}%", keyword.trim());
+        let mut statement = self.conn.prepare(
+    "SELECT id, kind, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+             FROM items WHERE preview LIKE ?1 OR content LIKE ?1 OR ocr_text LIKE ?1 ORDER BY created_at DESC LIMIT 300",
+    )?;
+        let rows = statement.query_map(params![like], row_to_item_light)?;
+        collect_rows(rows)
+    }
+
     pub fn recent_uncategorized(&self, limit: i64) -> Result<Vec<ClipboardItem>, AppError> {
         let mut statement = self.conn.prepare(
     "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
@@ -875,6 +924,26 @@ fn row_to_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
         height: row.get(12)?,
         image_hash: row.get(13)?,
         ocr_text: row.get(14)?,
+    })
+}
+
+fn row_to_item_light(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
+    Ok(ClipboardItem {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        content: None,
+        image_path: row.get(2)?,
+        preview: row.get(3)?,
+        is_star: int_to_bool(row.get::<_, i64>(4)?),
+        folder_id: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        expires_at: row.get(8)?,
+        mime_type: row.get(9)?,
+        width: row.get(10)?,
+        height: row.get(11)?,
+        image_hash: row.get(12)?,
+        ocr_text: row.get(13)?,
     })
 }
 
