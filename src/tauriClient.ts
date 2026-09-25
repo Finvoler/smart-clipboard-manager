@@ -36,7 +36,6 @@ const demoSettings: AppSettings = {
   anthropicBaseUrl: 'https://api.xiaomimimo.com/anthropic',
   apiKey: '',
   searchModel: 'mimo-v2.5-pro',
-  ocrModel: 'mimo-v2.5',
   language: 'zh',
 };
 

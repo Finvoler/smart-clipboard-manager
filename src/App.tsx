@@ -5,9 +5,9 @@
  * AI 搜索、AI 整理、临时池和多语言文案都集中在这里。
  */
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Archive, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, CornerDownLeft, Edit3, Folder as FolderIcon, FolderOpen, FolderPlus, Image as ImageIcon, Pin, Power, RefreshCw, Save, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
+import { Archive, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, CornerDownLeft, Edit3, Folder as FolderIcon, FolderOpen, FolderPlus, Image as ImageIcon, Pin, Power, RefreshCw, Save, ScanText, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
@@ -17,6 +17,11 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { call, fileSrc, onNewItem, onQuickSuggestionDetected, type AppSettings, type ClipboardItem, type DataDirectoryChangeResult, type Folder, type QuickItem, type QuickSuggestion } from './tauriClient';
 
 const DEFAULT_LIMIT = 0;
+const remarkPlugins = [remarkGfm, remarkMath];
+const rehypePlugins = [rehypeKatex, rehypeHighlight];
+const RecordMarkdown = memo(function RecordMarkdown({ text }: { text: string }) {
+  return <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{text}</ReactMarkdown>;
+});
 
 type SectionKey = 'api' | 'starred' | 'folders' | 'quickTools' | 'quickPending' | 'quickAccepted';
 type NoticeTone = 'info' | 'loading' | 'success' | 'error';
@@ -30,6 +35,8 @@ interface StatusNotice {
 const COPY = {
   zh: {
     clipboardHistory: '剪贴板历史',
+    expandRecord: '展开全部',
+    collapseRecord: '收起',
     clipboardSidebar: '剪贴板侧边栏',
     searchPlaceholder: '搜索剪贴板',
     aiSearchPlaceholder: 'AI 搜索剪贴板',
@@ -101,7 +108,8 @@ const COPY = {
     apiKey: 'API key',
     paste: '粘贴',
     searchArchiveModel: '搜索 / 整理模型',
-    ocrModel: 'OCR 模型',
+    localOcr: '图片 OCR',
+    localOcrDescription: 'Windows 本地 OCR，无需 API Key；请安装所需语言的系统 OCR 语言包',
     test: '测试',
     models: '模型',
     imageDimensions: (width?: number | null, height?: number | null) => `${width ?? '?'} x ${height ?? '?'}`,
@@ -114,6 +122,8 @@ const COPY = {
   },
   en: {
     clipboardHistory: 'Clipboard History',
+    expandRecord: 'Expand all',
+    collapseRecord: 'Collapse',
     clipboardSidebar: 'Clipboard Sidebar',
     searchPlaceholder: 'Search clipboard',
     aiSearchPlaceholder: 'AI search clipboard',
@@ -185,7 +195,8 @@ const COPY = {
     apiKey: 'API key',
     paste: 'Paste',
     searchArchiveModel: 'Search / archive model',
-    ocrModel: 'OCR model',
+    localOcr: 'Image OCR',
+    localOcrDescription: 'Windows local OCR, no API key. Requires an installed Windows OCR language pack.',
     test: 'Test',
     models: 'Models',
     imageDimensions: (width?: number | null, height?: number | null) => `${width ?? '?'} x ${height ?? '?'}`,
@@ -214,6 +225,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [status, setStatus] = useState<StatusNotice | null>(null);
   const [settingsStatus, setSettingsStatus] = useState('');
@@ -233,6 +245,9 @@ export function App() {
   const pendingKeysRef = useRef<Set<string>>(new Set());
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const aiSearchModeRef = useRef(false);
+  const queryRef = useRef('');
+  const searchGeneration = useRef(0);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const language: Language = settings?.language === 'en' ? 'en' : 'zh';
   const copy = COPY[language];
 
@@ -262,39 +277,57 @@ export function App() {
   }
 
   async function refresh() {
+    const generation = ++searchGeneration.current;
     const [history, folderList, pool, suggestions, appSettings] = await Promise.all([
-      call<ClipboardItem[]>('get_history_light', { limit: DEFAULT_LIMIT, offset: 0 }),
+      queryRef.current.trim() && !aiSearchModeRef.current
+        ? call<ClipboardItem[]>('search_local_light', { keyword: queryRef.current })
+        : call<ClipboardItem[]>('get_history_light', { limit: DEFAULT_LIMIT, offset: 0 }),
       call<Folder[]>('get_folders'),
       call<QuickItem[]>('get_quick_pool'),
       call<QuickSuggestion[]>('get_quick_suggestions'),
       call<AppSettings>('get_app_settings'),
     ]);
-    setItems(history);
+    if (generation === searchGeneration.current) {
+      setItems(history);
+      setExpandedIds(new Set());
+      setSelectedId((current) => current ?? history[0]?.id ?? null);
+    }
     setFolders(folderList);
     setQuickItems(pool);
     setQuickSuggestions(suggestions);
     setSettings(appSettings);
     setSavedSettings(appSettings);
-    setSelectedId((current) => current ?? history[0]?.id ?? null);
   }
 
   useEffect(() => {
-    void refresh();
+    void refresh().catch((error) => showStatus(String(error), 'error'));
 
     const cleanups: Array<() => void> = [];
+    let disposed = false;
+    const registerCleanup = (cleanup: () => void) => disposed ? cleanup() : cleanups.push(cleanup);
     void onNewItem((item) => {
+      if (aiSearchModeRef.current) return;
+      if (queryRef.current.trim()) {
+        void runLocalSearch(queryRef.current).catch((error) => showStatus(String(error), 'error'));
+        return;
+      }
       setItems((current) => {
         if (aiSearchModeRef.current) return current;
         return [item, ...current.filter((candidate) => candidate.id !== item.id)];
       });
       setSelectedId(item.id);
-    }).then((cleanup) => cleanups.push(cleanup));
+    }).then(registerCleanup);
 
     void onQuickSuggestionDetected((item) => {
       setQuickSuggestions((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
-    }).then((cleanup) => cleanups.push(cleanup));
+    }).then(registerCleanup);
 
-    return () => cleanups.forEach((cleanup) => cleanup());
+    return () => {
+      disposed = true;
+      ++searchGeneration.current;
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      cleanups.forEach((cleanup) => cleanup());
+    };
   }, []);
 
   useEffect(() => {
@@ -306,7 +339,8 @@ export function App() {
         void call('hide_window');
       }
 
-      if (!isTyping && event.key === 'Enter' && selectedId && editingId === null) {
+      const isInteractive = Boolean(target?.closest('button, a, [role="button"]'));
+      if (!event.defaultPrevented && !isTyping && !isInteractive && event.key === 'Enter' && selectedId && editingId === null) {
         event.preventDefault();
         const selected = items.find((item) => item.id === selectedId);
         if (selected) {
@@ -327,19 +361,45 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [status]);
 
-  const filteredItems = useMemo(() => {
-    if (aiSearchMode) return items;
-    if (!query.trim()) return items;
-    const keyword = query.trim().toLowerCase();
-    return items.filter((item) => `${item.preview} ${item.content ?? ''} ${item.ocrText ?? ''}`.toLowerCase().includes(keyword));
-  }, [aiSearchMode, items, query]);
+  // SQLite searches full content; light rows only contain a shortened preview.
+  // Filtering the preview again would discard valid matches later in a record.
+  const filteredItems = items;
+  const getItemKey = useMemo(() => (index: number) => items[index].id, [items]);
 
   const virtualizer = useVirtualizer({
     count: filteredItems.length,
+    getItemKey,
     getScrollElement: () => scrollParentRef.current,
     estimateSize: () => 120,
+    measureElement: (element) => element.getBoundingClientRect().height,
     overscan: 5,
   });
+
+  // Measure before paint after content changes. ResizeObserver additionally
+  // handles window resizing and images that finish loading later.
+  useLayoutEffect(() => {
+    scrollParentRef.current?.querySelectorAll<HTMLDivElement>('[data-index]').forEach((element) => {
+      virtualizer.measureElement(element);
+    });
+  }, [virtualizer, filteredItems, expandedIds, editingId, sidebarCollapsed]);
+
+  async function toggleRecordExpanded(item: ClipboardItem) {
+    if (!expandedIds.has(item.id) && item.kind === 'text' && item.content == null) {
+      try {
+        const full = await call<ClipboardItem>('get_item', { id: item.id });
+        setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, content: full.content } : entry));
+      } catch (error) {
+        showStatus(String(error), 'error');
+        return;
+      }
+    }
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+  }
 
   function showStatus(message: string, tone: NoticeTone = 'info') {
     setStatus({ message, tone });
@@ -349,36 +409,43 @@ export function App() {
     setOpenSections((current) => ({ ...current, [key]: !current[key] }));
   }
 
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   async function runLocalSearch(keyword: string) {
+    const generation = ++searchGeneration.current;
     if (!keyword.trim()) {
       await refresh();
       return;
     }
     const result = await call<ClipboardItem[]>('search_local_light', { keyword });
+    if (generation !== searchGeneration.current || aiSearchModeRef.current) return;
     setItems(result);
+    setExpandedIds(new Set());
     setSelectedId(result[0]?.id ?? null);
   }
 
   function handleSearchChange(value: string) {
     setQuery(value);
+    queryRef.current = value;
+    ++searchGeneration.current;
     if (aiSearchMode) return;
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     searchTimerRef.current = setTimeout(() => {
-      void runLocalSearch(value);
+      void runLocalSearch(value).catch((error) => showStatus(String(error), 'error'));
     }, 250);
   }
 
   async function clearSearch() {
     await runWithPending('search:clear', async () => {
       setQuery('');
+      queryRef.current = '';
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
       await refresh();
       searchInputRef.current?.focus();
     });
   }
 
   function toggleAiSearchMode() {
+    ++searchGeneration.current;
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     setAiSearchMode((current) => {
       const next = !current;
       aiSearchModeRef.current = next;
@@ -399,11 +466,13 @@ export function App() {
       return;
     }
     await runWithPending('ai:search', async () => {
+      const generation = ++searchGeneration.current;
       setAiSearchRunning(true);
       showStatus(copy.aiSearching, 'loading');
       try {
         const ids = await call<string[]>('search_ai_semantic', { query });
         const fullItems = await call<ClipboardItem[]>('get_items_by_ids', { ids });
+        if (generation !== searchGeneration.current || !aiSearchModeRef.current) return;
         setItems(fullItems);
         setSelectedId(fullItems[0]?.id ?? null);
         showStatus(copy.aiFound(fullItems.length), 'success');
@@ -763,6 +832,7 @@ export function App() {
               return (
                 <div
                   key={item.id}
+                  className="historyRow"
                   ref={virtualizer.measureElement}
                   data-index={virtualRow.index}
                   style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
@@ -772,7 +842,7 @@ export function App() {
                     onMouseEnter={() => setSelectedId(item.id)}
                     onClick={(event) => pasteFromRecord(event, item)}
                     onKeyDown={(event) => {
-                      if (event.key === 'Enter' && editingId !== item.id) {
+                      if (event.key === 'Enter' && event.target === event.currentTarget && editingId !== item.id) {
                         event.preventDefault();
                         void pasteClipboardItem(item);
                       }
@@ -785,6 +855,17 @@ export function App() {
                         <span>{formatTime(item.createdAt)}</span>
                       </button>
                       <div className="itemActions">
+                        {item.kind === 'text' || item.ocrText ? (
+                          <button
+                            className="recordExpandButton"
+                            aria-expanded={expandedIds.has(item.id)}
+                            aria-controls={`record-content-${item.id}`}
+                            disabled={isPending(`expand:${item.id}`) || editingId === item.id}
+                            onClick={(event) => stopAndRun(event, () => void runWithPending(`expand:${item.id}`, () => toggleRecordExpanded(item)))}
+                          >
+                            {expandedIds.has(item.id) ? copy.collapseRecord : copy.expandRecord}
+                          </button>
+                        ) : null}
                         <button className="iconButton small" onClick={(event) => stopAndRun(event, () => void toggleStar(item))} disabled={isPending(`star:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.star}>
                           <Star size={15} fill={item.isStar ? 'currentColor' : 'none'} />
                         </button>
@@ -807,7 +888,7 @@ export function App() {
                           </button>
                         ) : (
                           <button className={`iconButton small ${isPending(`ocr:${item.id}`) ? 'active loading' : ''}`} onClick={(event) => stopAndRun(event, () => void runOcr(item))} disabled={isPending(`ocr:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.ocrImage} aria-busy={isPending(`ocr:${item.id}`)}>
-                            <Bot size={15} />
+                            <ScanText size={15} />
                           </button>
                         )}
                         <button className="iconButton small danger" onClick={(event) => stopAndRun(event, () => void removeItem(item.id))} disabled={isPending(`delete:${item.id}`)} title={copy.delete}>
@@ -816,6 +897,7 @@ export function App() {
                       </div>
                     </div>
 
+                    <div id={`record-content-${item.id}`} className={`recordContent ${item.kind === 'image' ? 'imageContent' : ''} ${expandedIds.has(item.id) || editingId === item.id ? 'expanded' : ''}`}>
                     {editingId === item.id ? (
                       <div className="editorBlock">
                         <textarea value={editingText} disabled={isPending(`edit:${item.id}`)} onChange={(event) => setEditingText(event.target.value)} />
@@ -828,11 +910,10 @@ export function App() {
                       <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
                     ) : (
                       <div className="markdownButton" role="button" tabIndex={-1}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeHighlight]}>
-                          {item.content ?? item.preview}
-                        </ReactMarkdown>
+                        <RecordMarkdown text={item.content ?? item.preview} />
                       </div>
                     )}
+                    </div>
                   </article>
                 </div>
               );
@@ -1050,10 +1131,10 @@ function SettingsFields({ settings, status, modelOptions, copy, busy, dataDirect
         {copy.searchArchiveModel}
         <input list="mimo-models" value={settings.searchModel} disabled={busy} onChange={(event) => onChange({ searchModel: event.target.value })} />
       </label>
-      <label className="fieldLabel">
-        {copy.ocrModel}
-        <input list="mimo-models" value={settings.ocrModel} disabled={busy} onChange={(event) => onChange({ ocrModel: event.target.value })} />
-      </label>
+      <div className="fieldLabel">
+        {copy.localOcr}
+        <span>{copy.localOcrDescription}</span>
+      </div>
       <div className="settingsActions">
         <button onClick={onSave} disabled={busy}><Save size={14} /> {copy.save}</button>
         <button onClick={onTest} disabled={busy}><TestTube2 size={14} /> {copy.test}</button>

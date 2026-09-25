@@ -14,7 +14,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 - Quick pool for repeated text snippets, with temporary retention and star-to-history promotion.
 - Image history with screenshot deduplication, inline preview, manual OCR, and OCR text stored on the image record.
 - OCR text paste is separate: clicking the OCR text panel pastes text; clicking the rest of the image record pastes the image.
-- AI settings panel for OpenAI-compatible or Anthropic-compatible APIs, base URLs, API key, search model, and OCR model.
+- AI settings panel for OpenAI-compatible or Anthropic-compatible search and archive. Image OCR uses Windows locally.
 - Chinese/English UI language setting.
 - Custom data directory setting for the SQLite database, image cache, and future local data files, with restart-time migration.
 - Single-instance protection so duplicate launches focus the existing window instead of creating another tray/runtime process.
@@ -25,13 +25,25 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.1.9-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.3.0-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
-5. In Settings, configure API fields if AI search, AI archive, or OCR is needed.
+5. In Settings, configure API fields if AI search or AI archive is needed. OCR uses the local Windows language pack and does not need an API key.
 
 Do not run the exe directly from inside the zip file. Extract it first so startup shortcuts can point to a stable path.
+
+## Windows OCR requirements
+
+The portable exe calls `Windows.Media.Ocr` directly. This release does **not** install a certificate, register MSIX, or bundle models. The ordinary unpackaged executable was verified on the development Windows machine; this is not a guarantee for stripped-down Windows images or every OS build.
+
+- Windows 10/11 x64 with Microsoft Edge WebView2 Runtime.
+- Install the desired OCR language capability in **Windows Settings > Time & language > Language options > Optical character recognition**. A missing Chinese pack cannot be replaced by an English pack for Chinese screenshots.
+- If no recognizer is installed, the OCR button reports a missing language pack instead of calling a paid service. Installing Windows optional components may require administrator rights/network access; recognition itself is offline.
+- OCR is serialized and created only on demand; no polling, model download, or persistent engine. Results preserve line breaks and are stored as `ocr_text` on the existing image. Very large images are resized to the OS limit and a 16-megapixel bitmap budget; tiny text on huge screenshots may lose accuracy.
+- The legacy SQLite `ocr_model` column remains only so an older exe can still read the database during rollback. It is absent from settings IPC and UI and is never used for OCR.
+
+API documentation: [Windows OcrEngine](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine), [Microsoft PowerToys OCR implementation](https://github.com/microsoft/PowerToys/blob/main/src/modules/AdvancedPaste/AdvancedPaste/Helpers/OcrHelpers.cs).
 
 ## Recommended Settings
 
@@ -44,7 +56,7 @@ Do not run the exe directly from inside the zip file. Extract it first so startu
 - `Anthropic base URL`: default is `https://api.xiaomimimo.com/anthropic`.
 - `API key`: paste your provider key locally.
 - `Search / archive model`: model used by AI search and AI archive.
-- `OCR model`: model used for image OCR.
+- `Image OCR`: runs locally on demand using installed Windows OCR language packs. Prefers Chinese (also reads Latin letters), then the user's Windows language, then another installed recognizer. No API key or bundled OCR engine is used.
 - `File save path`: optional custom directory for the local database, image cache, and later data files. It is separated from the API save/test/model controls because it belongs to local storage rather than model configuration. Use `Choose folder`, or type a path manually, then click `Save path and restart`. The app will show the pending target, ask for confirmation, migrate existing data, and restart. `Current active data directory` only changes after the restart succeeds.
 
 ## Huorong / Security Software Notes
@@ -106,6 +118,7 @@ Verify before release:
 
 ```powershell
 npm run verify
+npm run test:ui # with npm run dev running in another terminal
 cd src-tauri
 cargo test
 ```
@@ -140,8 +153,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `smart_clipboard.exe` and this README.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.1.9`.
-5. Upload `SmartClipboard-v0.1.9-windows-x64.zip`.
+4. Tag version: `v0.3.0`.
+5. Upload `SmartClipboard-v0.3.0-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

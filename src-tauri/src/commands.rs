@@ -9,7 +9,7 @@ use base64::{engine::general_purpose, Engine as _};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
-    ai,
+    ai, ocr,
     db::AppError,
     models::{AppSettings, ClipboardItem, Folder, QuickItem, QuickSuggestion},
     platform, schedule_data_dir_change, sync_tray_menu, validate_data_dir_change, AppState,
@@ -516,19 +516,16 @@ pub async fn trigger_ocr(
             .map_err(String::from)?
             .ok_or_else(|| AppError::NotFound.to_string())?
     };
-    if item
-        .ocr_text
+    let image_path = item
+        .image_path
         .as_deref()
-        .is_some_and(|text| !text.trim().is_empty())
-    {
-        return Ok(item);
-    }
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .clone();
-    let text = ai::ocr_image(&settings, &item).await?;
+        .ok_or_else(|| "image record has no local image path".to_string())?
+        .to_owned();
+    let text = tauri::async_runtime::spawn_blocking(move || {
+        ocr::recognize_image(std::path::Path::new(&image_path))
+    })
+    .await
+    .map_err(|error| format!("OCR task failed: {error}"))??;
     let db = state
         .db
         .lock()

@@ -72,7 +72,6 @@ pub struct AppSettings {
     pub anthropic_base_url: String,
     pub api_key: String,
     pub search_model: String,
-    pub ocr_model: String,
     pub language: String,
 }
 
@@ -91,7 +90,6 @@ impl Default for AppSettings {
             anthropic_base_url: DEFAULT_ANTHROPIC_BASE_URL.to_string(),
             api_key: String::new(),
             search_model: "mimo-v2.5-pro".to_string(),
-            ocr_model: "mimo-v2.5".to_string(),
             language: "zh".to_string(),
         }
     }
@@ -117,14 +115,12 @@ impl AppSettings {
             .to_string();
         self.api_key = self.api_key.trim().to_string();
         self.search_model = self.search_model.trim().to_string();
-        self.ocr_model = self.ocr_model.trim().to_string();
         self.language = match self.language.trim().to_ascii_lowercase().as_str() {
             "en" | "english" => "en".to_string(),
             _ => "zh".to_string(),
         };
 
         self.search_model = normalize_model_name(&self.search_model);
-        self.ocr_model = normalize_model_name(&self.ocr_model);
 
         let defaults = Self::default();
         if self.openai_base_url.is_empty() {
@@ -135,9 +131,6 @@ impl AppSettings {
         }
         if self.search_model.is_empty() {
             self.search_model = defaults.search_model.clone();
-        }
-        if self.ocr_model.is_empty() {
-            self.ocr_model = self.search_model.clone();
         }
         if self.resolved_data_directory.is_empty() {
             self.resolved_data_directory = self.data_directory.clone();

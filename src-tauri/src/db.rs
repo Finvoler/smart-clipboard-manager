@@ -43,7 +43,7 @@ impl Database {
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
       PRAGMA synchronous = NORMAL;
-      PRAGMA cache_size = -20000;
+      PRAGMA cache_size = -4096;
       PRAGMA temp_store = MEMORY;
       PRAGMA mmap_size = 268435456;
 
@@ -163,7 +163,7 @@ impl Database {
         defaults.anthropic_base_url,
         defaults.api_key,
         defaults.search_model,
-        defaults.ocr_model,
+        "", // Legacy database column retained for rollback compatibility.
                 defaults.language,
         now_ts(),
       ],
@@ -188,7 +188,6 @@ impl Database {
                 anthropic_base_url: row.get(8)?,
                 api_key: row.get(9)?,
                 search_model: row.get(10)?,
-                ocr_model: row.get(11)?,
                                 language: row.get(12)?,
       }),
     ).map(|settings| settings.normalized()).map_err(AppError::from)
@@ -210,7 +209,7 @@ impl Database {
         settings.anthropic_base_url,
         settings.api_key,
         settings.search_model,
-        settings.ocr_model,
+        "", // OCR is local; never persist an API model.
                 settings.language,
         now_ts(),
       ],
@@ -1053,6 +1052,42 @@ impl From<AppError> for String {
 mod tests {
     use super::{now_ts, Database};
     use rusqlite::params;
+
+    #[test]
+    fn history_edit_search_star_folders_and_ocr_roundtrip() {
+        let temp = std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let mut db = Database::open(temp.join("test.sqlite"), temp.join("images")).unwrap();
+        let text = format!("{} unique-at-the-end", "long content ".repeat(100));
+        let (item, _) = db.insert_text_item(&text).unwrap();
+        let light = db.search_local_light("unique-at-the-end").unwrap();
+        assert_eq!(light.len(), 1);
+        assert!(light[0].content.is_none());
+        assert!(!light[0].preview.contains("unique-at-the-end"));
+        assert_eq!(db.get_item(&item.id).unwrap().unwrap().content.as_deref(), Some(text.as_str()));
+        db.update_item_text(&item.id, "edited clipboard").unwrap();
+        assert!(db.search_local_light("unique-at-the-end").unwrap().is_empty());
+        assert_eq!(db.search_local_light("edited clipboard").unwrap().len(), 1);
+        assert!(db.toggle_star(&item.id, true).unwrap().expires_at.is_none());
+        assert!(db.toggle_star(&item.id, false).unwrap().expires_at.is_some());
+        let folder = db.create_folder("Testing").unwrap();
+        db.move_to_folder(&item.id, Some(folder.id.clone())).unwrap();
+        assert_eq!(db.get_folders().unwrap().len(), 1);
+        db.delete_folder(&folder.id).unwrap();
+        assert!(db.get_item(&item.id).unwrap().unwrap().folder_id.is_none());
+        let image = db.insert_image_item(1, 1, &[255, 255, 255, 255]).unwrap();
+        db.update_image_ocr_text(&image.id, "OCR line one\nOCR line two").unwrap();
+        assert_eq!(db.search_local_light("line two").unwrap()[0].id, image.id);
+        assert!(db.get_app_settings().unwrap().api_key.is_empty());
+        let settings = db.get_app_settings().unwrap();
+        assert!(serde_json::to_value(&settings).unwrap().get("ocrModel").is_none());
+        db.save_app_settings(settings).unwrap();
+        db.delete_item(&image.id).unwrap();
+        assert!(!std::path::Path::new(image.image_path.as_ref().unwrap()).exists());
+        db.delete_item(&item.id).unwrap();
+        assert!(db.get_history_light(0, 0).unwrap().is_empty());
+        drop(db);
+        std::fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn quick_pool_extracts_after_five_exact_repeated_copies() {

@@ -57,7 +57,6 @@ export interface AppSettings {
   anthropicBaseUrl: string;
   apiKey: string;
   searchModel: string;
-  ocrModel: string;
   language: 'zh' | 'en';
 }
 

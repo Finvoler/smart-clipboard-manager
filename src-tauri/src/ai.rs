@@ -1,11 +1,8 @@
 //! AI 适配层。
 //!
 //! 负责和 OpenAI 兼容 / Anthropic 兼容接口对话，提供模型列表、语义搜索、
-//! 分类归档和 OCR 四类能力。这里刻意保持“按需触发”，不做后台轮询。
+//! 分类归档三类能力。这里刻意保持“按需触发”，不做后台轮询。
 
-use std::fs;
-
-use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 
 use crate::models::{AppSettings, CategoryAssignment, ClipboardItem, Folder};
@@ -24,7 +21,7 @@ const KNOWN_MIMO_MODELS: [&str; 9] = [
 
 pub async fn test_connection(settings: &AppSettings) -> Result<String, String> {
     let settings = settings.clone().normalized();
-    ensure_ai_ready(&settings, false)?;
+    ensure_ai_ready(&settings)?;
     let content = complete_text(
         &settings,
         &settings.search_model,
@@ -107,7 +104,7 @@ pub async fn semantic_search(
     }
 
     let settings = settings.clone().normalized();
-    ensure_ai_ready(&settings, false)?;
+    ensure_ai_ready(&settings)?;
     let now = crate::db::now_ts();
     let payload = records
         .iter()
@@ -189,7 +186,7 @@ pub async fn categorize(
     }
 
     let settings = settings.clone().normalized();
-    ensure_ai_ready(&settings, false)?;
+    ensure_ai_ready(&settings)?;
     let payload = records
         .iter()
         .map(|item| {
@@ -243,31 +240,10 @@ pub async fn categorize(
         .collect())
 }
 
-pub async fn ocr_image(settings: &AppSettings, item: &ClipboardItem) -> Result<String, String> {
-    if std::env::var("SMART_CLIPBOARD_MOCK_AI").ok().as_deref() == Some("1") {
-        return Ok(format!("OCR text extracted from {}", item.preview));
-    }
-
-    let settings = settings.clone().normalized();
-    ensure_ai_ready(&settings, true)?;
-    let image_path = item
-        .image_path
-        .as_ref()
-        .ok_or_else(|| "image record has no local image path".to_string())?;
-    let image_bytes = fs::read(image_path).map_err(|error| error.to_string())?;
-    let image_base64 = general_purpose::STANDARD.encode(image_bytes);
-    complete_image(
-    &settings,
-    &settings.ocr_model,
-    "Extract all readable text from this image. Return only the extracted text, preserving line breaks when useful.",
-    &image_base64,
-  ).await
-}
-
-fn ensure_ai_ready(settings: &AppSettings, ocr: bool) -> Result<(), String> {
+fn ensure_ai_ready(settings: &AppSettings) -> Result<(), String> {
     ensure_api_key(settings)?;
-    if settings.search_model.is_empty() || (ocr && settings.ocr_model.is_empty()) {
-        return Err("AI model is empty. Set search/archive and OCR model names first.".to_string());
+    if settings.search_model.is_empty() {
+        return Err("AI model is empty. Set the search/archive model first.".to_string());
     }
     Ok(())
 }
@@ -291,18 +267,6 @@ async fn complete_text(
     }
 }
 
-async fn complete_image(
-    settings: &AppSettings,
-    model: &str,
-    prompt: &str,
-    image_base64: &str,
-) -> Result<String, String> {
-    match settings.ai_protocol.as_str() {
-        "anthropic" => complete_anthropic_image(settings, model, prompt, image_base64).await,
-        _ => complete_openai_image(settings, model, prompt, image_base64).await,
-    }
-}
-
 async fn complete_openai_text(
     settings: &AppSettings,
     model: &str,
@@ -322,30 +286,6 @@ async fn complete_openai_text(
     extract_openai_content(&value)
 }
 
-async fn complete_openai_image(
-    settings: &AppSettings,
-    model: &str,
-    prompt: &str,
-    image_base64: &str,
-) -> Result<String, String> {
-    let body = serde_json::json!({
-      "model": model,
-            "max_completion_tokens": 2000,
-            "thinking": { "type": "disabled" },
-      "messages": [
-        {
-          "role": "user",
-          "content": [
-            { "type": "text", "text": prompt },
-            { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{image_base64}") } }
-          ]
-        }
-      ]
-    });
-    let value = post_json_bearer(&openai_chat_url(settings), &settings.api_key, body).await?;
-    extract_openai_content(&value)
-}
-
 async fn complete_anthropic_text(
     settings: &AppSettings,
     model: &str,
@@ -357,28 +297,6 @@ async fn complete_anthropic_text(
       "max_tokens": 1200,
       "system": system,
       "messages": [{ "role": "user", "content": user }]
-    });
-    let value =
-        post_json_anthropic(&anthropic_messages_url(settings), &settings.api_key, body).await?;
-    extract_anthropic_content(&value)
-}
-
-async fn complete_anthropic_image(
-    settings: &AppSettings,
-    model: &str,
-    prompt: &str,
-    image_base64: &str,
-) -> Result<String, String> {
-    let body = serde_json::json!({
-      "model": model,
-      "max_tokens": 2000,
-      "messages": [{
-        "role": "user",
-        "content": [
-          { "type": "text", "text": prompt },
-          { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": image_base64 } }
-        ]
-      }]
     });
     let value =
         post_json_anthropic(&anthropic_messages_url(settings), &settings.api_key, body).await?;

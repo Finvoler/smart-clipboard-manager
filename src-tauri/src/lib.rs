@@ -7,6 +7,7 @@ mod ai;
 mod commands;
 mod db;
 mod models;
+mod ocr;
 mod platform;
 mod quick_pool;
 
@@ -144,6 +145,8 @@ pub fn run() {
 
             let data_dir = resolve_effective_data_dir(&app_handle, &bootstrap)?;
             std::fs::create_dir_all(&data_dir)?;
+            // Serve only clipboard images, without base64 IPC copies of each PNG.
+            app.asset_protocol_scope().allow_directory(data_dir.join("images"), false)?;
             let db_path = data_dir.join("smart_clipboard.sqlite");
             let mut database = Database::open(db_path, data_dir.join("images"))?;
             database.cleanup_retention()?;

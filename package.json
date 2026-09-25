@@ -1,6 +1,6 @@
 {
   "name": "smart-clipboard-manager",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "verify": "npm run build && node scripts/verify-gates.mjs",
-    "rust:test": "cd src-tauri && cargo test"
+    "rust:test": "cd src-tauri && cargo test",
+    "test:ui": "node scripts/test-ui.cjs"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.3",
@@ -32,6 +33,7 @@
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.0.4",
+    "playwright": "^1.63.0",
     "typescript": "^5.9.3",
     "vite": "^7.1.11"
   }

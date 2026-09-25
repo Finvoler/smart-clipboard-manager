@@ -460,7 +460,9 @@ fn capture_clipboard() {
     }
 }
 
-fn emit_new_item(app: &AppHandle, item: ClipboardItem) {
+fn emit_new_item(app: &AppHandle, mut item: ClipboardItem) {
+    // Match get_history_light: large text is fetched only for editing/expanding.
+    item.content = None;
     let _ = app.emit("on_new_item", item);
 }
 
