@@ -25,7 +25,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.3.0-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.3.1-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -153,8 +153,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `smart_clipboard.exe` and this README.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.3.0`.
-5. Upload `SmartClipboard-v0.3.0-windows-x64.zip`.
+4. Tag version: `v0.3.1`.
+5. Upload `SmartClipboard-v0.3.1-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

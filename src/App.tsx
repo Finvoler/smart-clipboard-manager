@@ -5,7 +5,7 @@
  * AI 搜索、AI 整理、临时池和多语言文案都集中在这里。
  */
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Archive, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, CornerDownLeft, Edit3, Folder as FolderIcon, FolderOpen, FolderPlus, Image as ImageIcon, Pin, Power, RefreshCw, Save, ScanText, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -22,6 +22,14 @@ const rehypePlugins = [rehypeKatex, rehypeHighlight];
 const RecordMarkdown = memo(function RecordMarkdown({ text }: { text: string }) {
   return <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{text}</ReactMarkdown>;
 });
+
+function moveGlassHighlight(event: PointerEvent<HTMLElement>) {
+  const button = (event.target as Element).closest('button');
+  if (!button || !event.currentTarget.contains(button)) return;
+  const bounds = button.getBoundingClientRect();
+  button.style.setProperty('--glint-x', `${event.clientX - bounds.left}px`);
+  button.style.setProperty('--glint-y', `${event.clientY - bounds.top}px`);
+}
 
 type SectionKey = 'api' | 'starred' | 'folders' | 'quickTools' | 'quickPending' | 'quickAccepted';
 type NoticeTone = 'info' | 'loading' | 'success' | 'error';
@@ -226,6 +234,7 @@ export function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [visiblyClippedIds, setVisiblyClippedIds] = useState<Set<string>>(() => new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [status, setStatus] = useState<StatusNotice | null>(null);
   const [settingsStatus, setSettingsStatus] = useState('');
@@ -381,6 +390,39 @@ export function App() {
     scrollParentRef.current?.querySelectorAll<HTMLDivElement>('[data-index]').forEach((element) => {
       virtualizer.measureElement(element);
     });
+    const measureClipping = () => {
+      const clipped = new Set<string>();
+      scrollParentRef.current?.querySelectorAll<HTMLElement>('.recordContent:not(.imageContent):not(.expanded)').forEach((element) => {
+        const body = element.querySelector<HTMLElement>('.markdownButton');
+        // The reveal state adds 28 px of bottom padding; exclude it when
+        // measuring content after a resize.
+        const revealPadding = element.classList.contains('isTruncated') ? 28 : 0;
+        if (body && body.scrollHeight - revealPadding > 221) {
+          const id = element.dataset.itemId;
+          if (id) clipped.add(id);
+        }
+      });
+      setVisiblyClippedIds((current) => {
+        for (const id of expandedIds) {
+          if (current.has(id)) clipped.add(id);
+        }
+        if (current.size === clipped.size && [...current].every((id) => clipped.has(id))) return current;
+        return clipped;
+      });
+    };
+    measureClipping();
+    let frame = 0;
+    const scheduleMeasurement = () => {
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; measureClipping(); });
+    };
+    const list = scrollParentRef.current;
+    list?.addEventListener('scroll', scheduleMeasurement, { passive: true });
+    window.addEventListener('resize', scheduleMeasurement);
+    return () => {
+      list?.removeEventListener('scroll', scheduleMeasurement);
+      window.removeEventListener('resize', scheduleMeasurement);
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, [virtualizer, filteredItems, expandedIds, editingId, sidebarCollapsed]);
 
   async function toggleRecordExpanded(item: ClipboardItem) {
@@ -787,7 +829,7 @@ export function App() {
   const settingsBusy = ['settings:save', 'settings:test', 'settings:models', 'settings:pasteKey', 'settings:path'].some(isPending);
 
   return (
-    <main className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+    <main className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} onPointerMove={moveGlassHighlight}>
       <section className="timeline" aria-label={copy.clipboardHistory}>
         <header className={`toolbar ${aiSearchMode ? 'aiSearchActive' : ''}`}>
           <div className={`searchBox ${aiSearchMode ? 'aiActive' : ''}`}>
@@ -829,6 +871,8 @@ export function App() {
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = filteredItems[virtualRow.index];
+              const canExpandText = item.kind === 'text' &&
+                ((item.preview.endsWith('...') && [...item.preview].length === 183) || visiblyClippedIds.has(item.id));
               return (
                 <div
                   key={item.id}
@@ -855,17 +899,6 @@ export function App() {
                         <span>{formatTime(item.createdAt)}</span>
                       </button>
                       <div className="itemActions">
-                        {item.kind === 'text' || item.ocrText ? (
-                          <button
-                            className="recordExpandButton"
-                            aria-expanded={expandedIds.has(item.id)}
-                            aria-controls={`record-content-${item.id}`}
-                            disabled={isPending(`expand:${item.id}`) || editingId === item.id}
-                            onClick={(event) => stopAndRun(event, () => void runWithPending(`expand:${item.id}`, () => toggleRecordExpanded(item)))}
-                          >
-                            {expandedIds.has(item.id) ? copy.collapseRecord : copy.expandRecord}
-                          </button>
-                        ) : null}
                         <button className="iconButton small" onClick={(event) => stopAndRun(event, () => void toggleStar(item))} disabled={isPending(`star:${item.id}`) || isPending(`delete:${item.id}`)} title={copy.star}>
                           <Star size={15} fill={item.isStar ? 'currentColor' : 'none'} />
                         </button>
@@ -897,7 +930,7 @@ export function App() {
                       </div>
                     </div>
 
-                    <div id={`record-content-${item.id}`} className={`recordContent ${item.kind === 'image' ? 'imageContent' : ''} ${expandedIds.has(item.id) || editingId === item.id ? 'expanded' : ''}`}>
+                    <div id={`record-content-${item.id}`} data-item-id={item.id} className={`recordContent ${item.kind === 'image' ? 'imageContent' : ''} ${expandedIds.has(item.id) || editingId === item.id ? 'expanded' : ''} ${canExpandText && !expandedIds.has(item.id) && editingId !== item.id ? 'isTruncated' : ''}`}>
                     {editingId === item.id ? (
                       <div className="editorBlock">
                         <textarea value={editingText} disabled={isPending(`edit:${item.id}`)} onChange={(event) => setEditingText(event.target.value)} />
@@ -907,13 +940,21 @@ export function App() {
                         </div>
                       </div>
                     ) : item.kind === 'image' ? (
-                      <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
+                      <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} ocrExpanded={expandedIds.has(item.id)} onToggleOcr={() => void runWithPending(`expand:${item.id}`, () => toggleRecordExpanded(item))} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
                     ) : (
                       <div className="markdownButton" role="button" tabIndex={-1}>
                         <RecordMarkdown text={item.content ?? item.preview} />
                       </div>
                     )}
+                    {canExpandText && !expandedIds.has(item.id) && editingId !== item.id ? (
+                      <button className="recordRevealButton" type="button" aria-label={copy.expandRecord} title={copy.expandRecord} aria-expanded={false} aria-controls={`record-content-${item.id}`} disabled={isPending(`expand:${item.id}`)} onClick={(event) => stopAndRun(event, () => void runWithPending(`expand:${item.id}`, () => toggleRecordExpanded(item)))}>
+                        <span aria-hidden="true">···</span>
+                      </button>
+                    ) : null}
                     </div>
+                    {canExpandText && expandedIds.has(item.id) && editingId !== item.id ? (
+                      <button className="recordCollapseButton" type="button" aria-expanded={true} aria-controls={`record-content-${item.id}`} onClick={(event) => stopAndRun(event, () => void toggleRecordExpanded(item))}>{copy.collapseRecord} <ChevronDown size={13} aria-hidden="true" /></button>
+                    ) : null}
                   </article>
                 </div>
               );
@@ -1165,13 +1206,29 @@ function SettingsFields({ settings, status, modelOptions, copy, busy, dataDirect
   );
 }
 
-function ImagePreview({ item, copy, pasteOcrPending, onPasteOcr }: { item: ClipboardItem; copy: Copy; pasteOcrPending: boolean; onPasteOcr: (text: string) => void }) {
+function ImagePreview({ item, copy, pasteOcrPending, ocrExpanded, onToggleOcr, onPasteOcr }: { item: ClipboardItem; copy: Copy; pasteOcrPending: boolean; ocrExpanded: boolean; onToggleOcr: () => void; onPasteOcr: (text: string) => void }) {
   const [dataSrc, setDataSrc] = useState('');
   const [imageFailed, setImageFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [ocrOverflow, setOcrOverflow] = useState(false);
+  const ocrPaneRef = useRef<HTMLDivElement | null>(null);
+  const ocrTextRef = useRef<HTMLParagraphElement | null>(null);
   const filePreviewSrc = fileSrc(item.imagePath);
   const src = dataSrc || filePreviewSrc;
   const ocrText = item.ocrText?.trim();
+
+  useLayoutEffect(() => {
+    if (!ocrText || ocrExpanded) return;
+    const measure = () => {
+      const text = ocrTextRef.current;
+      const pane = ocrPaneRef.current;
+      setOcrOverflow(Boolean(text && pane && (text.scrollHeight > text.clientHeight + 1 || pane.scrollHeight > pane.clientHeight + 1)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (ocrPaneRef.current) observer.observe(ocrPaneRef.current);
+    return () => observer.disconnect();
+  }, [ocrText, ocrExpanded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1225,10 +1282,18 @@ function ImagePreview({ item, copy, pasteOcrPending, onPasteOcr }: { item: Clipb
       {ocrText ? (
         <>
           <div className="imageOcrDivider" aria-hidden="true" />
-          <button className="ocrTextPane" onClick={(event) => { event.stopPropagation(); onPasteOcr(ocrText); }} disabled={pasteOcrPending} title={copy.pasteOcrText} type="button">
-            <span>{copy.ocrText}</span>
-            <p>{ocrText}</p>
-          </button>
+          <div className={`ocrPaneWrap ${ocrOverflow && !ocrExpanded ? 'isTruncated' : ''}`} ref={ocrPaneRef}>
+            <button className="ocrTextPane" onClick={(event) => { event.stopPropagation(); onPasteOcr(ocrText); }} disabled={pasteOcrPending} title={copy.pasteOcrText} type="button">
+              <span>{copy.ocrText}</span>
+              <p ref={ocrTextRef}>{ocrText}</p>
+            </button>
+            {ocrOverflow && !ocrExpanded ? (
+              <button className="ocrRevealButton" type="button" aria-label={copy.expandRecord} title={copy.expandRecord} aria-expanded={false} onClick={(event) => { event.stopPropagation(); onToggleOcr(); }}><span aria-hidden="true">···</span></button>
+            ) : null}
+            {ocrOverflow && ocrExpanded ? (
+              <button className="ocrCollapseButton" type="button" aria-label={copy.collapseRecord} aria-expanded={true} onClick={(event) => { event.stopPropagation(); onToggleOcr(); }}>{copy.collapseRecord}</button>
+            ) : null}
+          </div>
         </>
       ) : null}
       {expanded && src && !imageFailed ? (
