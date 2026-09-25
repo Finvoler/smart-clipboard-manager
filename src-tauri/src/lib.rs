@@ -534,11 +534,54 @@ pub(crate) fn validate_data_dir_change(
             .map_err(|error| error.to_string())?
     };
 
+    #[cfg(target_os = "windows")]
+    validate_windows_data_directory_path(&target_dir)?;
+
+    validate_existing_manual_data_dir(&target_dir, next_data_dir.is_some())?;
+
     if current_dir == target_dir {
         return Ok(());
     }
     if target_dir.exists() && target_dir_has_conflicting_app_data(&target_dir)? {
         return Err(target_dir_conflict_message(&target_dir));
+    }
+    Ok(())
+}
+
+fn validate_existing_manual_data_dir(path: &Path, manual: bool) -> Result<(), String> {
+    if manual && !path.is_dir() {
+        return Err("Invalid data directory: choose an existing folder; folders are not created automatically".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn validate_windows_data_directory_path(path: &Path) -> Result<(), String> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err("Invalid data directory: enter a full drive or network path".to_string());
+    }
+    for component in path.components() {
+        let Component::Normal(segment) = component else { continue };
+        let name = segment.to_string_lossy();
+        let upper = name.trim_end_matches([' ', '.']).to_ascii_uppercase();
+        let base = upper.split('.').next().unwrap_or("");
+        let reserved = matches!(base, "CON" | "PRN" | "AUX" | "NUL")
+            || (base.len() == 4 && (base.starts_with("COM") || base.starts_with("LPT"))
+                && base.as_bytes()[3].is_ascii_digit() && base.as_bytes()[3] != b'0');
+        if name.is_empty()
+            || name.ends_with([' ', '.'])
+            || name.chars().any(|c| c < ' ' || "<>:\"|?*".contains(c))
+            || reserved
+        {
+            return Err(format!("Invalid data directory: unsupported folder name '{name}'"));
+        }
+    }
+    let ancestor = path.ancestors().find(|candidate| candidate.exists())
+        .ok_or_else(|| "Invalid data directory: drive or network share is unavailable".to_string())?;
+    if !ancestor.is_dir() {
+        return Err("Invalid data directory: a parent path is a file".to_string());
     }
     Ok(())
 }
@@ -730,6 +773,18 @@ mod tests {
         assert!(
             target_dir_has_conflicting_app_data(&temp.path).expect("unexpected validation failure")
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn rejects_invalid_manual_data_directory_before_restart() {
+        let temp = TempTestDir::new();
+        assert!(super::validate_windows_data_directory_path(std::path::Path::new("relative\\folder")).is_err());
+        assert!(super::validate_windows_data_directory_path(&temp.path.join("bad?folder")).is_err());
+        assert!(super::validate_windows_data_directory_path(&temp.path.join("CON.txt")).is_err());
+        assert!(super::validate_windows_data_directory_path(&temp.path.join("valid-folder")).is_ok());
+        assert!(super::validate_existing_manual_data_dir(&temp.path.join("missing"), true).is_err());
+        assert!(super::validate_existing_manual_data_dir(&temp.path, true).is_ok());
     }
 
     #[test]

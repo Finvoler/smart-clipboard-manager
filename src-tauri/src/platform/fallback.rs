@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::AppState;
 
@@ -35,8 +35,12 @@ pub fn show_main_window(
     _last_foreground_window: &Arc<Mutex<Option<isize>>>,
 ) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
+        let was_visible = window.is_visible().map_err(|error| error.to_string())?;
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
+        if !was_visible {
+            let _ = app.emit("panel-shown", ());
+        }
     }
     Ok(())
 }

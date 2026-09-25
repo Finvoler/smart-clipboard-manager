@@ -67,10 +67,11 @@ const STARTUP_VALUE_NAME: &str = "SmartClipboardManager";
 const STARTUP_SHORTCUT_NAME: &str = "Smart Clipboard Manager.lnk";
 const STARTUP_ARG: &str = "--startup";
 const CLIPBOARD_DEBOUNCE_TIMER: usize = 1;
-const CLIPBOARD_DEBOUNCE_MS: u32 = 200;
+const CLIPBOARD_CAPTURE_DELAY_MS: u32 = 75;
 const PASTE_FOCUS_TIMEOUT_MS: u64 = 120;
 
 static CLIPBOARD_RUNTIME: OnceLock<ClipboardRuntime> = OnceLock::new();
+static CLIPBOARD_CAPTURE_SCHEDULED: AtomicBool = AtomicBool::new(false);
 static HOTKEY_RUNTIME: OnceLock<HotkeyRuntime> = OnceLock::new();
 
 #[derive(Clone)]
@@ -340,7 +341,11 @@ pub fn show_main_window(
         {
             let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
         }
+        let was_visible = window.is_visible().map_err(|error| error.to_string())?;
         window.show().map_err(|error| error.to_string())?;
+        if !was_visible {
+            let _ = app.emit("panel-shown", ());
+        }
     }
     Ok(())
 }
@@ -396,12 +401,16 @@ unsafe extern "system" fn clipboard_wnd_proc(
 ) -> LRESULT {
     match message {
         WM_CLIPBOARDUPDATE => {
-            let _ = KillTimer(hwnd, CLIPBOARD_DEBOUNCE_TIMER);
-            SetTimer(hwnd, CLIPBOARD_DEBOUNCE_TIMER, CLIPBOARD_DEBOUNCE_MS, None);
+            // Schedule from the first update. Restarting the timer for every
+            // update collapses a quick sequence of separate copy actions.
+            if !CLIPBOARD_CAPTURE_SCHEDULED.swap(true, Ordering::SeqCst) {
+                SetTimer(hwnd, CLIPBOARD_DEBOUNCE_TIMER, CLIPBOARD_CAPTURE_DELAY_MS, None);
+            }
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == CLIPBOARD_DEBOUNCE_TIMER => {
             let _ = KillTimer(hwnd, CLIPBOARD_DEBOUNCE_TIMER);
+            CLIPBOARD_CAPTURE_SCHEDULED.store(false, Ordering::SeqCst);
             capture_clipboard();
             LRESULT(0)
         }

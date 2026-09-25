@@ -7,14 +7,14 @@
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Archive, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, CornerDownLeft, Edit3, Folder as FolderIcon, FolderOpen, FolderPlus, Image as ImageIcon, Pin, Power, RefreshCw, Save, ScanText, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
+import { Archive, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, CircleCheck, Clock, CornerDownLeft, Edit3, Folder as FolderIcon, FolderOpen, FolderPlus, Image as ImageIcon, Info, LoaderCircle, Pin, Power, RefreshCw, Save, ScanText, Search, Settings, Star, TestTube2, Trash2, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { open } from '@tauri-apps/plugin-dialog';
-import { call, fileSrc, onNewItem, onQuickSuggestionDetected, type AppSettings, type ClipboardItem, type DataDirectoryChangeResult, type Folder, type QuickItem, type QuickSuggestion } from './tauriClient';
+import { call, fileSrc, onNewItem, onPanelShown, onQuickSuggestionDetected, type AppSettings, type ClipboardItem, type DataDirectoryChangeResult, type Folder, type QuickItem, type QuickSuggestion } from './tauriClient';
 
 const DEFAULT_LIMIT = 0;
 const remarkPlugins = [remarkGfm, remarkMath];
@@ -45,6 +45,9 @@ const COPY = {
     clipboardHistory: '剪贴板历史',
     expandRecord: '展开全部',
     collapseRecord: '收起',
+    expandOcrText: '展开 OCR 文字',
+    collapseOcrText: '收起 OCR 文字',
+    closeNotice: '关闭通知',
     clipboardSidebar: '剪贴板侧边栏',
     searchPlaceholder: '搜索剪贴板',
     aiSearchPlaceholder: 'AI 搜索剪贴板',
@@ -54,20 +57,25 @@ const COPY = {
     aiArchive: 'AI 整理',
     toggleSidebar: '折叠侧边栏',
     enterSearch: '先输入要查找的内容',
-    aiSearching: 'AI 正在查找...',
+    aiSearching: 'AI 正在搜索全部历史，记录较多时可能需要较长时间...',
     aiFound: (count: number) => `AI 找到 ${count} 条相关记录`,
-    aiOrganizing: 'AI 正在整理分类...',
+    aiOrganizing: 'AI 正在整理最近 300 条未归档记录，可能需要较长时间...',
     aiOrganized: (count: number) => `AI 已整理 ${count} 条记录`,
     settingsSaved: '已保存',
+    actionFailed: '失败',
+    actionWorking: '处理中',
+    testPassed: '测试成功',
+    chosen: '已选择',
+    restored: '已选择默认',
     dataDirectory: '文件保存路径',
     currentDataDirectory: '当前实际数据目录',
     chooseFolder: '选择文件夹',
     useDefaultPath: '恢复默认',
     dataDirectoryApply: '保存路径并重启',
-    dataDirectoryPending: (target: string) => `待切换到: ${target}`,
-    dataDirectoryHelp: '数据库、图片缓存和后续数据文件都会保存在这里。选择或输入路径后，点击“保存路径并重启”才会迁移并生效。',
+    dataDirectoryInvalid: '路径无效',
+    dataDirectoryFailed: '路径保存失败',
+    dataDirectoryHelp: '数据库、图片缓存和后续数据文件都会保存在这里。只能选择或输入已存在的文件夹；点击“保存路径并重启”后才会迁移并生效。',
     dataDirectoryConfirm: (target: string) => `确认把数据迁移到「${target}」？应用会自动重启。`,
-    dataDirectoryRestarting: '正在切换数据目录并重启...',
     loadedModels: (count: number) => `已加载 ${count} 个模型`,
     clipboardEmpty: '剪贴板为空',
     apiKeyPasted: 'API key 已本地粘贴',
@@ -116,12 +124,15 @@ const COPY = {
     apiKey: 'API key',
     paste: '粘贴',
     searchArchiveModel: '搜索 / 整理模型',
+    showModelOptions: '显示模型候选',
+    hideModelOptions: '收起模型候选',
     localOcr: '图片 OCR',
     localOcrDescription: 'Windows 本地 OCR，无需 API Key；请安装所需语言的系统 OCR 语言包',
     test: '测试',
     models: '模型',
     imageDimensions: (width?: number | null, height?: number | null) => `${width ?? '?'} x ${height ?? '?'}`,
     fullPreview: '完整预览',
+    stopPreview: '停止预览',
     ocrText: 'OCR 文本',
     pasteOcrText: '粘贴 OCR 文本',
     ocrReady: 'OCR 文本已写回图片记录',
@@ -132,6 +143,9 @@ const COPY = {
     clipboardHistory: 'Clipboard History',
     expandRecord: 'Expand all',
     collapseRecord: 'Collapse',
+    expandOcrText: 'Expand OCR text',
+    collapseOcrText: 'Collapse OCR text',
+    closeNotice: 'Dismiss notification',
     clipboardSidebar: 'Clipboard Sidebar',
     searchPlaceholder: 'Search clipboard',
     aiSearchPlaceholder: 'AI search clipboard',
@@ -141,20 +155,25 @@ const COPY = {
     aiArchive: 'AI archive',
     toggleSidebar: 'Toggle sidebar',
     enterSearch: 'Enter something to search',
-    aiSearching: 'AI is searching...',
+    aiSearching: 'AI is searching all history; large libraries may take a while...',
     aiFound: (count: number) => `AI found ${count} matching records`,
-    aiOrganizing: 'AI is organizing records...',
+    aiOrganizing: 'AI is organizing up to 300 recent uncategorized records; this may take a while...',
     aiOrganized: (count: number) => `AI organized ${count} records`,
     settingsSaved: 'Saved',
+    actionFailed: 'Failed',
+    actionWorking: 'Working',
+    testPassed: 'Test passed',
+    chosen: 'Selected',
+    restored: 'Default selected',
     dataDirectory: 'Data directory',
     currentDataDirectory: 'Current active data directory',
     chooseFolder: 'Choose folder',
     useDefaultPath: 'Use default',
     dataDirectoryApply: 'Save path and restart',
-    dataDirectoryPending: (target: string) => `Pending target: ${target}`,
-    dataDirectoryHelp: 'The database, image cache, and future data files will be stored here. Choose a folder or type a path, then click Save path and restart to migrate and apply it.',
+    dataDirectoryInvalid: 'Invalid path',
+    dataDirectoryFailed: 'Path save failed',
+    dataDirectoryHelp: 'The database, image cache, and future data files will be stored here. Choose or enter an existing folder, then click Save path and restart to migrate and apply it.',
     dataDirectoryConfirm: (target: string) => `Move existing data to "${target}" and restart the app?`,
-    dataDirectoryRestarting: 'Switching data directory and restarting...',
     loadedModels: (count: number) => `Loaded ${count} models`,
     clipboardEmpty: 'Clipboard is empty',
     apiKeyPasted: 'API key pasted locally',
@@ -203,12 +222,15 @@ const COPY = {
     apiKey: 'API key',
     paste: 'Paste',
     searchArchiveModel: 'Search / archive model',
+    showModelOptions: 'Show model options',
+    hideModelOptions: 'Collapse model options',
     localOcr: 'Image OCR',
     localOcrDescription: 'Windows local OCR, no API key. Requires an installed Windows OCR language pack.',
     test: 'Test',
     models: 'Models',
     imageDimensions: (width?: number | null, height?: number | null) => `${width ?? '?'} x ${height ?? '?'}`,
     fullPreview: 'Full preview',
+    stopPreview: 'Stop preview',
     ocrText: 'OCR text',
     pasteOcrText: 'Paste OCR text',
     ocrReady: 'OCR text saved on this image record',
@@ -223,6 +245,7 @@ type Copy = {
 
 export function App() {
   const [items, setItems] = useState<ClipboardItem[]>([]);
+  const [allItems, setAllItems] = useState<ClipboardItem[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [quickItems, setQuickItems] = useState<QuickItem[]>([]);
   const [quickSuggestions, setQuickSuggestions] = useState<QuickSuggestion[]>([]);
@@ -236,8 +259,12 @@ export function App() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [visiblyClippedIds, setVisiblyClippedIds] = useState<Set<string>>(() => new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [folderNameDraft, setFolderNameDraft] = useState('');
+  const [folderDialogError, setFolderDialogError] = useState('');
   const [status, setStatus] = useState<StatusNotice | null>(null);
-  const [settingsStatus, setSettingsStatus] = useState('');
+  const [actionFeedback, setActionFeedback] = useState<Record<string, { tone: 'success' | 'error'; label: string; detail?: string }>>({});
+  const actionTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [aiSearchMode, setAiSearchMode] = useState(false);
   const [aiSearchRunning, setAiSearchRunning] = useState(false);
   const [categorizeRunning, setCategorizeRunning] = useState(false);
@@ -259,6 +286,18 @@ export function App() {
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const language: Language = settings?.language === 'en' ? 'en' : 'zh';
   const copy = COPY[language];
+
+  function flashAction(key: string, tone: 'success' | 'error', label: string, detail?: string) {
+    clearTimeout(actionTimers.current[key]);
+    setActionFeedback((current) => ({ ...current, [key]: { tone, label, detail } }));
+    actionTimers.current[key] = setTimeout(() => setActionFeedback((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    }), 3000);
+  }
+
+  useEffect(() => () => Object.values(actionTimers.current).forEach(clearTimeout), []);
 
   function isPending(key: string) {
     return pendingKeys.has(key);
@@ -287,10 +326,12 @@ export function App() {
 
   async function refresh() {
     const generation = ++searchGeneration.current;
-    const [history, folderList, pool, suggestions, appSettings] = await Promise.all([
-      queryRef.current.trim() && !aiSearchModeRef.current
+    const hasLocalFilter = Boolean(queryRef.current.trim() && !aiSearchModeRef.current);
+    const [history, completeHistory, folderList, pool, suggestions, appSettings] = await Promise.all([
+      hasLocalFilter
         ? call<ClipboardItem[]>('search_local_light', { keyword: queryRef.current })
         : call<ClipboardItem[]>('get_history_light', { limit: DEFAULT_LIMIT, offset: 0 }),
+      hasLocalFilter ? call<ClipboardItem[]>('get_history_light', { limit: DEFAULT_LIMIT, offset: 0 }) : Promise.resolve(null),
       call<Folder[]>('get_folders'),
       call<QuickItem[]>('get_quick_pool'),
       call<QuickSuggestion[]>('get_quick_suggestions'),
@@ -299,8 +340,9 @@ export function App() {
     if (generation === searchGeneration.current) {
       setItems(history);
       setExpandedIds(new Set());
-      setSelectedId((current) => current ?? history[0]?.id ?? null);
+      setSelectedId((current) => current && history.some((item) => item.id === current) ? current : history[0]?.id ?? null);
     }
+    setAllItems(completeHistory ?? history);
     setFolders(folderList);
     setQuickItems(pool);
     setQuickSuggestions(suggestions);
@@ -315,6 +357,7 @@ export function App() {
     let disposed = false;
     const registerCleanup = (cleanup: () => void) => disposed ? cleanup() : cleanups.push(cleanup);
     void onNewItem((item) => {
+      setAllItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
       if (aiSearchModeRef.current) return;
       if (queryRef.current.trim()) {
         void runLocalSearch(queryRef.current).catch((error) => showStatus(String(error), 'error'));
@@ -325,11 +368,19 @@ export function App() {
         return [item, ...current.filter((candidate) => candidate.id !== item.id)];
       });
       setSelectedId(item.id);
-    }).then(registerCleanup);
+    }).then(registerCleanup).catch((error) => showStatus(String(error), 'error'));
 
     void onQuickSuggestionDetected((item) => {
       setQuickSuggestions((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
-    }).then(registerCleanup);
+    }).then(registerCleanup).catch((error) => showStatus(String(error), 'error'));
+
+    void onPanelShown(() => {
+      void call<AppSettings>('get_app_settings').then((saved) => {
+        setSettings(saved);
+        setSavedSettings(saved);
+        setActionFeedback({});
+      }).catch((error) => showStatus(String(error), 'error'));
+    }).then(registerCleanup).catch((error) => showStatus(String(error), 'error'));
 
     return () => {
       disposed = true;
@@ -344,8 +395,20 @@ export function App() {
       const target = event.target as HTMLElement | null;
       const isTyping = Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'));
       if (event.key === 'Escape') {
+        if (event.defaultPrevented) return;
+        if (folderDialogOpen) {
+          event.preventDefault();
+          setFolderDialogOpen(false);
+          return;
+        }
+        if (editingId !== null) {
+          event.preventDefault();
+          setEditingId(null);
+          return;
+        }
         event.preventDefault();
         void call('hide_window');
+        return;
       }
 
       const isInteractive = Boolean(target?.closest('button, a, [role="button"]'));
@@ -362,11 +425,11 @@ export function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedId, editingId, items]);
+  }, [selectedId, editingId, folderDialogOpen, items]);
 
   useEffect(() => {
     if (!status || status.tone === 'loading') return;
-    const timer = window.setTimeout(() => setStatus(null), 5000);
+    const timer = window.setTimeout(() => setStatus(null), status.tone === 'error' ? 8000 : 4500);
     return () => window.clearTimeout(timer);
   }, [status]);
 
@@ -468,7 +531,10 @@ export function App() {
     setQuery(value);
     queryRef.current = value;
     ++searchGeneration.current;
-    if (aiSearchMode) return;
+    if (aiSearchMode) {
+      setStatus(null);
+      return;
+    }
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     searchTimerRef.current = setTimeout(() => {
       void runLocalSearch(value).catch((error) => showStatus(String(error), 'error'));
@@ -477,6 +543,7 @@ export function App() {
 
   async function clearSearch() {
     await runWithPending('search:clear', async () => {
+      setStatus(null);
       setQuery('');
       queryRef.current = '';
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
@@ -488,18 +555,16 @@ export function App() {
   function toggleAiSearchMode() {
     ++searchGeneration.current;
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    setAiSearchMode((current) => {
-      const next = !current;
-      aiSearchModeRef.current = next;
-      if (current) {
-        setAiSearchRunning(false);
-        setStatus(null);
-        void runLocalSearch(query);
-      } else {
-        window.setTimeout(() => searchInputRef.current?.focus(), 20);
-      }
-      return next;
-    });
+    const next = !aiSearchModeRef.current;
+    aiSearchModeRef.current = next;
+    setAiSearchMode(next);
+    if (!next) {
+      setAiSearchRunning(false);
+      setStatus(null);
+      void runLocalSearch(queryRef.current).catch((error) => showStatus(String(error), 'error'));
+    } else {
+      window.setTimeout(() => searchInputRef.current?.focus(), 20);
+    }
   }
 
   async function runAiSearch() {
@@ -519,7 +584,9 @@ export function App() {
         setSelectedId(fullItems[0]?.id ?? null);
         showStatus(copy.aiFound(fullItems.length), 'success');
       } catch (error) {
-        showStatus(error instanceof Error ? error.message : String(error), 'error');
+        if (generation === searchGeneration.current && aiSearchModeRef.current) {
+          showStatus(error instanceof Error ? error.message : String(error), 'error');
+        }
       } finally {
         setAiSearchRunning(false);
       }
@@ -527,7 +594,33 @@ export function App() {
   }
 
   function updateSettings(patch: Partial<AppSettings>) {
+    if ('dataDirectory' in patch) {
+      clearTimeout(actionTimers.current['settings:applyPath']);
+      setActionFeedback((current) => {
+        const next = { ...current };
+        delete next['settings:applyPath'];
+        return next;
+      });
+    }
     setSettings((current) => current ? { ...current, ...patch } : current);
+  }
+
+  async function saveToggle(key: 'captureEnabled' | 'runAtStartup' | 'hideConsoleWindow', value: boolean) {
+    if (!settings || pendingKeysRef.current.has('settings:toggle')) return;
+    const previous = settings[key];
+    updateSettings({ [key]: value });
+    await runWithPending('settings:toggle', async () => {
+      try {
+        const saved = await call<AppSettings>('save_app_settings', {
+          settings: { ...(savedSettings ?? settings), [key]: value, appEnabled: true },
+        });
+        setSavedSettings(saved);
+        setSettings((current) => current ? { ...current, [key]: saved[key] } : saved);
+      } catch (error) {
+        setSettings((current) => current ? { ...current, [key]: previous } : current);
+        showStatus(error instanceof Error ? error.message : String(error), 'error');
+      }
+    });
   }
 
   async function persistSettings(nextSettings = settings) {
@@ -535,7 +628,6 @@ export function App() {
     const saved = await call<AppSettings>('save_app_settings', { settings: { ...nextSettings, appEnabled: true } });
     setSettings(saved);
     setSavedSettings(saved);
-    setSettingsStatus(copy.settingsSaved);
     return saved;
   }
 
@@ -543,9 +635,9 @@ export function App() {
     return nextSettings.dataDirectory.trim() !== (savedSettings?.dataDirectory.trim() ?? '');
   }
 
-  async function saveSettings(nextSettings = settings) {
+  async function saveSettings(nextSettings = settings, actionKey: 'settings:save' | 'settings:applyPath' = 'settings:save') {
     const pendingDataDirectoryChange = !!nextSettings && hasPendingDataDirectoryChange(nextSettings);
-    await runWithPending('settings:save', async () => {
+    await runWithPending(actionKey, async () => {
       try {
         if (!nextSettings) return;
         if (pendingDataDirectoryChange) {
@@ -553,13 +645,12 @@ export function App() {
           const targetLabel = nextSettings.dataDirectory.trim() || copy.useDefaultPath;
           const confirmed = window.confirm(copy.dataDirectoryConfirm(targetLabel));
           if (!confirmed) return;
-          setSettingsStatus(copy.dataDirectoryRestarting);
           const result = await call<DataDirectoryChangeResult>('change_data_directory', {
             settings: { ...nextSettings, appEnabled: true },
           });
           setSettings(result.settings);
           setSavedSettings(result.settings);
-          setSettingsStatus(result.message);
+          flashAction(actionKey, 'success', copy.settingsSaved);
           if (result.restartRequired) {
             try {
               await call('restart_application');
@@ -570,12 +661,12 @@ export function App() {
           return;
         }
         await persistSettings(nextSettings);
+        flashAction(actionKey, 'success', copy.settingsSaved);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        setSettingsStatus(message);
-        if (pendingDataDirectoryChange) {
-          window.alert(message);
-        }
+        flashAction(actionKey, 'error', actionKey === 'settings:applyPath'
+          ? (message.startsWith('Invalid data directory:') ? copy.dataDirectoryInvalid : copy.dataDirectoryFailed)
+          : copy.actionFailed, message);
       }
     });
   }
@@ -583,11 +674,31 @@ export function App() {
   async function testAiConnection() {
     await runWithPending('settings:test', async () => {
       try {
-        await persistSettings();
-        const result = await call<string>('test_ai_connection');
-        setSettingsStatus(result);
+        if (!settings) return;
+        // Test commits only the API fields being tested. Other draft settings,
+        // especially a pending data-directory migration, stay untouched.
+        const saved = await call<AppSettings>('save_app_settings', { settings: {
+          ...(savedSettings ?? settings),
+          aiProtocol: settings.aiProtocol,
+          openaiBaseUrl: settings.openaiBaseUrl,
+          anthropicBaseUrl: settings.anthropicBaseUrl,
+          apiKey: settings.apiKey,
+          searchModel: settings.searchModel,
+          appEnabled: true,
+        } });
+        setSavedSettings(saved);
+        setSettings((current) => current ? {
+          ...current,
+          aiProtocol: saved.aiProtocol,
+          openaiBaseUrl: saved.openaiBaseUrl,
+          anthropicBaseUrl: saved.anthropicBaseUrl,
+          apiKey: saved.apiKey,
+          searchModel: saved.searchModel,
+        } : saved);
+        await call<string>('test_ai_connection', { settings: saved });
+        flashAction('settings:test', 'success', copy.testPassed);
       } catch (error) {
-        setSettingsStatus(error instanceof Error ? error.message : String(error));
+        flashAction('settings:test', 'error', copy.actionFailed, error instanceof Error ? error.message : String(error));
       }
     });
   }
@@ -595,12 +706,12 @@ export function App() {
   async function refreshModelOptions() {
     await runWithPending('settings:models', async () => {
       try {
-        await persistSettings();
-        const models = await call<string[]>('list_ai_models');
+        if (!settings) return;
+        const models = await call<string[]>('list_ai_models', { settings });
         setModelOptions(models);
-        setSettingsStatus(copy.loadedModels(models.length));
+        flashAction('settings:models', 'success', copy.loadedModels(models.length));
       } catch (error) {
-        setSettingsStatus(error instanceof Error ? error.message : String(error));
+        flashAction('settings:models', 'error', copy.actionFailed, error instanceof Error ? error.message : String(error));
       }
     });
   }
@@ -610,13 +721,13 @@ export function App() {
       try {
         const apiKey = (await navigator.clipboard.readText()).trim();
         if (!apiKey) {
-          setSettingsStatus(copy.clipboardEmpty);
+          flashAction('settings:pasteKey', 'error', copy.actionFailed, copy.clipboardEmpty);
           return;
         }
         updateSettings({ apiKey });
-        setSettingsStatus(copy.apiKeyPasted);
+        flashAction('settings:pasteKey', 'success', copy.chosen);
       } catch (error) {
-        setSettingsStatus(error instanceof Error ? error.message : String(error));
+        flashAction('settings:pasteKey', 'error', copy.actionFailed, error instanceof Error ? error.message : String(error));
       }
     });
   }
@@ -633,17 +744,17 @@ export function App() {
         const selectedPath = Array.isArray(selected) ? selected[0] : selected;
         if (typeof selectedPath === 'string' && selectedPath.trim()) {
           updateSettings({ dataDirectory: selectedPath });
-          setSettingsStatus('');
+          flashAction('settings:path', 'success', copy.chosen);
         }
       } catch (error) {
-        setSettingsStatus(error instanceof Error ? error.message : String(error));
+        flashAction('settings:path', 'error', copy.actionFailed, error instanceof Error ? error.message : String(error));
       }
     });
   }
 
   function resetDataDirectory() {
     updateSettings({ dataDirectory: '' });
-    setSettingsStatus('');
+    flashAction('settings:resetPath', 'success', copy.restored);
   }
 
   async function executePaste(id: string, overrideText?: string, pendingKey = `paste:${id || overrideText || 'override'}`) {
@@ -704,6 +815,7 @@ export function App() {
         const starred = await call<ClipboardItem>('star_quick_item', { id });
         setQuickItems((current) => current.filter((item) => item.id !== id));
         setItems((current) => [starred, ...current.filter((item) => item.id !== starred.id)]);
+        setAllItems((current) => [starred, ...current.filter((item) => item.id !== starred.id)]);
         setSelectedId(starred.id);
       } catch (error) {
         showStatus(error instanceof Error ? error.message : String(error), 'error');
@@ -727,6 +839,7 @@ export function App() {
       try {
         const updated = await call<ClipboardItem>('update_item_text', { id, text: editingText });
         setItems((current) => current.map((item) => (item.id === id ? updated : item)));
+        setAllItems((current) => current.map((item) => (item.id === id ? updated : item)));
         setEditingId(null);
         setEditingText('');
       } catch (error) {
@@ -740,6 +853,7 @@ export function App() {
       try {
         const updated = await call<ClipboardItem>('toggle_star', { id: item.id, isStar: !item.isStar });
         setItems((current) => current.map((candidate) => (candidate.id === item.id ? updated : candidate)));
+        setAllItems((current) => current.map((candidate) => (candidate.id === item.id ? updated : candidate)));
       } catch (error) {
         showStatus(error instanceof Error ? error.message : String(error), 'error');
       }
@@ -751,6 +865,8 @@ export function App() {
       try {
         await call('delete_item', { id });
         setItems((current) => current.filter((item) => item.id !== id));
+        setAllItems((current) => current.filter((item) => item.id !== id));
+        setSelectedId((current) => current === id ? items.find((item) => item.id !== id)?.id ?? null : current);
       } catch (error) {
         showStatus(error instanceof Error ? error.message : String(error), 'error');
       }
@@ -765,6 +881,7 @@ export function App() {
         await call('delete_folder', { id: folder.id });
         setFolders((current) => current.filter((item) => item.id !== folder.id));
         setItems((current) => current.map((item) => item.folderId === folder.id ? { ...item, folderId: null } : item));
+        setAllItems((current) => current.map((item) => item.folderId === folder.id ? { ...item, folderId: null } : item));
       } catch (error) {
         showStatus(error instanceof Error ? error.message : String(error), 'error');
       }
@@ -776,21 +893,24 @@ export function App() {
       try {
         const updated = await call<ClipboardItem>('move_to_folder', { itemId, folderId });
         setItems((current) => current.map((item) => (item.id === itemId ? updated : item)));
+        setAllItems((current) => current.map((item) => (item.id === itemId ? updated : item)));
       } catch (error) {
         showStatus(error instanceof Error ? error.message : String(error), 'error');
       }
     });
   }
 
-  async function createFolder() {
-    const name = window.prompt(copy.folderNamePrompt);
-    if (!name?.trim()) return;
+  async function createFolder(name: string) {
+    if (!name.trim()) return;
     await runWithPending('folder:create', async () => {
       try {
         const folder = await call<Folder>('create_folder', { name: name.trim() });
         setFolders((current) => [...current, folder]);
+        setFolderDialogOpen(false);
+        setFolderNameDraft('');
+        setFolderDialogError('');
       } catch (error) {
-        showStatus(error instanceof Error ? error.message : String(error), 'error');
+        setFolderDialogError(error instanceof Error ? error.message : String(error));
       }
     });
   }
@@ -816,6 +936,7 @@ export function App() {
       try {
         const updated = await call<ClipboardItem>('trigger_ocr', { imageId: item.id });
         setItems((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
+        setAllItems((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
         setSelectedId(updated.id);
         showStatus(copy.ocrReady, 'success');
       } catch (error) {
@@ -826,7 +947,7 @@ export function App() {
 
   const aiSearchPending = aiSearchRunning || isPending('ai:search');
   const categorizePending = categorizeRunning || isPending('ai:categorize');
-  const settingsBusy = ['settings:save', 'settings:test', 'settings:models', 'settings:pasteKey', 'settings:path'].some(isPending);
+  const settingsBusy = ['settings:save', 'settings:applyPath', 'settings:test', 'settings:models', 'settings:pasteKey', 'settings:path', 'settings:toggle'].some(isPending);
 
   return (
     <main className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} onPointerMove={moveGlassHighlight}>
@@ -865,7 +986,7 @@ export function App() {
           </button>
         </header>
 
-        {status ? <StatusLine notice={status} onClose={() => setStatus(null)} /> : null}
+        {status ? <StatusLine notice={status} closeLabel={copy.closeNotice} onClose={() => setStatus(null)} /> : null}
 
         <div className="historyList" ref={scrollParentRef}>
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
@@ -906,15 +1027,19 @@ export function App() {
                           <button
                             className="iconButton small"
                             disabled={isPending(`edit:${item.id}`) || isPending(`delete:${item.id}`)}
-                            onClick={(event) => stopAndRun(event, async () => {
-                              let content = item.content;
-                              if (!content) {
-                                const full = await call<ClipboardItem>('get_item', { id: item.id });
-                                content = full.content ?? '';
+                            onClick={(event) => stopAndRun(event, () => void runWithPending(`edit:${item.id}`, async () => {
+                              try {
+                                let content = item.content;
+                                if (!content) {
+                                  const full = await call<ClipboardItem>('get_item', { id: item.id });
+                                  content = full.content ?? '';
+                                }
+                                setEditingId(item.id);
+                                setEditingText(content);
+                              } catch (error) {
+                                showStatus(error instanceof Error ? error.message : String(error), 'error');
                               }
-                              setEditingId(item.id);
-                              setEditingText(content);
-                            })}
+                            }))}
                             title={copy.editText}
                           >
                             <Edit3 size={15} />
@@ -943,7 +1068,7 @@ export function App() {
                       <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} ocrExpanded={expandedIds.has(item.id)} onToggleOcr={() => void runWithPending(`expand:${item.id}`, () => toggleRecordExpanded(item))} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
                     ) : (
                       <div className="markdownButton" role="button" tabIndex={-1}>
-                        <RecordMarkdown text={item.content ?? item.preview} />
+                        {canExpandText && !expandedIds.has(item.id) ? <p className="recordPreviewText">{item.preview}</p> : <RecordMarkdown text={item.content ?? item.preview} />}
                       </div>
                     )}
                     {canExpandText && !expandedIds.has(item.id) && editingId !== item.id ? (
@@ -953,7 +1078,7 @@ export function App() {
                     ) : null}
                     </div>
                     {canExpandText && expandedIds.has(item.id) && editingId !== item.id ? (
-                      <button className="recordCollapseButton" type="button" aria-expanded={true} aria-controls={`record-content-${item.id}`} onClick={(event) => stopAndRun(event, () => void toggleRecordExpanded(item))}>{copy.collapseRecord} <ChevronDown size={13} aria-hidden="true" /></button>
+                      <button className="recordCollapseButton" type="button" aria-expanded={true} aria-controls={`record-content-${item.id}`} onClick={(event) => stopAndRun(event, () => void toggleRecordExpanded(item))}><ChevronUp size={14} aria-hidden="true" /><span>{copy.collapseRecord}</span></button>
                     ) : null}
                   </article>
                 </div>
@@ -969,8 +1094,8 @@ export function App() {
         </button>
 
         <SidebarSection title={copy.starred} icon={<Star size={15} />} open={openSections.starred} onToggle={() => toggleSection('starred')}>
-          {items.filter((item) => item.isStar).length === 0 ? <div className="emptyHint">{copy.noStarred}</div> : null}
-          {items.filter((item) => item.isStar).map((item) => (
+          {allItems.filter((item) => item.isStar).length === 0 ? <div className="emptyHint">{copy.noStarred}</div> : null}
+          {allItems.filter((item) => item.isStar).map((item) => (
             <div key={item.id} className="starredRow">
               <button className="sideItem starredSideItem" onClick={() => pasteClipboardItem(item)} disabled={isPending(`paste:item:${item.id}`) || isPending(`delete:${item.id}`)}>{item.preview}</button>
               <button className="iconButton small danger starredDeleteButton" onClick={(event) => stopAndRun(event, () => void removeItem(item.id))} disabled={isPending(`delete:${item.id}`)} title={copy.deleteStarredRecord}>
@@ -990,6 +1115,7 @@ export function App() {
                 onPaste={(content) => executePaste('', content, `paste:quick:${item.id}`)}
                 onStar={() => starQuickItem(item.id)}
                 onUpdate={(updated) => setQuickItems((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate))}
+                onError={(error) => showStatus(error instanceof Error ? error.message : String(error), 'error')}
                 onDelete={() => deleteQuickItem(item.id)}
                 pending={isPending(`quick:${item.id}`)}
                 pastePending={isPending(`paste:quick:${item.id}`)}
@@ -1010,14 +1136,14 @@ export function App() {
           icon={<FolderIcon size={15} />}
           open={openSections.folders}
           onToggle={() => toggleSection('folders')}
-          actions={<button className="iconButton small" onClick={(event) => stopAndRun(event, () => void createFolder())} disabled={isPending('folder:create')} title={copy.createFolder}><FolderPlus size={14} /></button>}
+          actions={<button className="iconButton small" onClick={(event) => stopAndRun(event, () => { setFolderNameDraft(''); setFolderDialogError(''); setFolderDialogOpen(true); })} disabled={isPending('folder:create')} title={copy.createFolder}><FolderPlus size={14} /></button>}
         >
           {folders.length === 0 ? <div className="emptyHint">{copy.noFoldersYet}</div> : null}
           {folders.map((folder) => (
             <FolderDropTarget
               key={folder.id}
               folder={folder}
-              items={items}
+              items={allItems}
               copy={copy}
               folderDeleting={isPending(`folder:delete:${folder.id}`)}
               isItemPastePending={(id) => isPending(`paste:item:${id}`)}
@@ -1034,13 +1160,16 @@ export function App() {
           {settings ? (
             <SettingsFields
               settings={settings}
-              status={settingsStatus}
+              feedback={actionFeedback}
+              pendingKeys={pendingKeys}
               modelOptions={modelOptions}
               copy={copy}
               busy={settingsBusy}
               dataDirectoryDirty={hasPendingDataDirectoryChange(settings)}
               onChange={updateSettings}
+              onToggle={(key, value) => void saveToggle(key, value)}
               onSave={() => void saveSettings()}
+              onApplyPath={() => void saveSettings(settings, 'settings:applyPath')}
               onTest={() => void testAiConnection()}
               onRefreshModels={() => void refreshModelOptions()}
               onPasteKey={() => void pasteApiKeyFromClipboard()}
@@ -1050,16 +1179,24 @@ export function App() {
           ) : <div className="emptyHint">{copy.settingsLoading}</div>}
         </SidebarSection>
       </aside>
+      {folderDialogOpen ? <div className="dialogBackdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !isPending('folder:create')) setFolderDialogOpen(false); }}>
+        <form className="glassDialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title" onSubmit={(event) => { event.preventDefault(); void createFolder(folderNameDraft); }} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!isPending('folder:create')) setFolderDialogOpen(false); } }}>
+          <div className="glassDialogHeader"><span className="glassDialogIcon"><FolderPlus size={18} /></span><h2 id="folder-dialog-title">{copy.createFolder}</h2><button className="dialogClose" type="button" title={copy.cancel} aria-label={copy.cancel} disabled={isPending('folder:create')} onClick={() => setFolderDialogOpen(false)}><X size={16} /></button></div>
+          <label className="dialogField">{copy.folderNamePrompt}<input autoFocus value={folderNameDraft} onChange={(event) => { setFolderNameDraft(event.target.value); setFolderDialogError(''); }} maxLength={80} placeholder={copy.folderNamePrompt} disabled={isPending('folder:create')} /></label>
+          {folderDialogError ? <div className="dialogError" role="alert">{folderDialogError}</div> : null}
+          <div className="glassDialogActions"><button type="button" disabled={isPending('folder:create')} onClick={() => setFolderDialogOpen(false)}>{copy.cancel}</button><button className="dialogSubmit" type="submit" disabled={isPending('folder:create') || !folderNameDraft.trim()}>{isPending('folder:create') ? <span className="buttonSpinner" aria-hidden="true" /> : <FolderPlus size={15} />}<span>{isPending('folder:create') ? copy.actionWorking : copy.createFolder}</span></button></div>
+        </form>
+      </div> : null}
     </main>
   );
 }
 
-function StatusLine({ notice, onClose }: { notice: StatusNotice; onClose: () => void }) {
+function StatusLine({ notice, closeLabel, onClose }: { notice: StatusNotice; closeLabel: string; onClose: () => void }) {
   return (
-    <div className={`statusLine ${notice.tone}`}>
-      <span className={`statusPulse ${notice.tone === 'loading' ? '' : 'idle'}`} aria-hidden="true" />
+    <div className={`statusLine ${notice.tone}`} role={notice.tone === 'error' ? 'alert' : 'status'}>
+      <span className="statusIcon" aria-hidden="true">{notice.tone === 'loading' ? <LoaderCircle size={17} /> : notice.tone === 'success' ? <CircleCheck size={17} /> : notice.tone === 'error' ? <CircleAlert size={17} /> : <Info size={17} />}</span>
       <span className="statusMessage">{notice.message}</span>
-      <button className="statusClose" onClick={onClose} title="Close status"><X size={15} /></button>
+      <button className="statusClose" onClick={onClose} title={closeLabel} aria-label={closeLabel}><X size={15} /></button>
     </div>
   );
 }
@@ -1092,6 +1229,80 @@ function QuickFolder({ title, count, open, onToggle, tone, children }: { title: 
   );
 }
 
+function GlassSelect({ value, options, onChange, disabled, label, className = '' }: { value: string; options: { value: string; label: string }[]; onChange: (value: string) => void; disabled?: boolean; label: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const currentIndex = Math.max(0, options.findIndex((option) => option.value === value));
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: globalThis.PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, [open]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  const select = (index: number) => {
+    const option = options[index];
+    if (option) onChange(option.value);
+    setOpen(false);
+    rootRef.current?.querySelector<HTMLButtonElement>('.glassSelectTrigger')?.focus();
+  };
+  return (
+    <div className={`glassSelect ${className} ${open ? 'isOpen' : ''}`} ref={rootRef}>
+      <button className="glassSelectTrigger" type="button" role="combobox" aria-label={label} aria-expanded={open} aria-haspopup="listbox" disabled={disabled} title={options[currentIndex]?.label ?? label} onClick={() => { setActiveIndex(currentIndex); setOpen((current) => !current); }} onKeyDown={(event) => {
+        if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); return; }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          const next = open ? (activeIndex + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length : currentIndex;
+          setActiveIndex(next);
+          setOpen(true);
+        }
+        if (event.key === 'Enter' && open) { event.preventDefault(); select(activeIndex); }
+      }}>
+        <span className="glassSelectValue">{options[currentIndex]?.label ?? label}</span><ChevronDown size={15} aria-hidden="true" />
+      </button>
+      {open ? <div className="glassSelectMenu" role="listbox" aria-label={label}>
+        {options.map((option, index) => <button key={`${option.value}-${index}`} className={`glassSelectOption ${index === activeIndex ? 'isActive' : ''}`} type="button" role="option" aria-selected={value === option.value} title={option.label} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(index)}><span>{option.label}</span>{value === option.value ? <Check size={14} aria-hidden="true" /> : null}</button>)}
+      </div> : null}
+    </div>
+  );
+}
+
+function ModelInput({ value, options, onChange, disabled, label, showOptionsLabel, hideOptionsLabel }: { value: string; options: string[]; onChange: (value: string) => void; disabled: boolean; label: string; showOptionsLabel: string; hideOptionsLabel: string }) {
+  const [open, setOpen] = useState(false);
+  const [filtering, setFiltering] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const matches = filtering ? options.filter((option) => option.toLowerCase().includes(value.trim().toLowerCase())) : options;
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: globalThis.PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, [open]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  return <div className="modelInput" ref={rootRef}>
+    <input value={value} disabled={disabled} role="combobox" aria-label={label} aria-autocomplete="list" aria-expanded={open && matches.length > 0} onFocus={() => { setActiveIndex(0); setFiltering(false); setOpen(true); }} onChange={(event) => { onChange(event.target.value); setActiveIndex(0); setFiltering(true); setOpen(true); }} onKeyDown={(event) => {
+      if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); return; }
+      if (!matches.length) return;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActiveIndex((current) => (current + (event.key === 'ArrowDown' ? 1 : -1) + matches.length) % matches.length);
+        setOpen(true);
+      }
+      if (event.key === 'Enter' && open) { event.preventDefault(); onChange(matches[activeIndex] ?? matches[0]); setFiltering(false); setOpen(false); }
+    }} />
+    <button className={`modelToggle ${open ? 'isOpen' : ''}`} type="button" disabled={disabled} aria-label={open ? hideOptionsLabel : showOptionsLabel} title={open ? hideOptionsLabel : showOptionsLabel} aria-expanded={open} onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setActiveIndex(0); setFiltering(false); setOpen((current) => !current); }}>{open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</button>
+    {open && matches.length > 0 ? <div className="glassSelectMenu modelSuggestions" role="listbox" aria-label={label}>
+      {matches.map((option, index) => <button className={`glassSelectOption ${index === activeIndex ? 'isActive' : ''}`} key={option} type="button" role="option" aria-selected={option === value} title={option} onMouseEnter={() => setActiveIndex(index)} onClick={() => { onChange(option); setFiltering(false); setOpen(false); }}><span>{option}</span>{option === value ? <Check size={14} aria-hidden="true" /> : null}</button>)}
+    </div> : null}
+  </div>;
+}
+
 function QuickSuggestionRow({ item, copy, pending, onAccept, onDismiss }: { item: QuickSuggestion; copy: Copy; pending: boolean; onAccept: (ttl: number) => Promise<void>; onDismiss: () => Promise<void>; }) {
   const [ttl, setTtl] = useState(String(24 * 60 * 60));
 
@@ -1099,13 +1310,7 @@ function QuickSuggestionRow({ item, copy, pending, onAccept, onDismiss }: { item
     <div className="suggestionRow">
       <div className="quickContentText">{item.content}</div>
       <div className="suggestionMeta">{copy.repeatedMeta(item.hitCount)}</div>
-      <label className="quickRetentionLabel" aria-label={copy.retentionLabel}>
-        <select value={ttl} onChange={(event) => setTtl(event.target.value)} disabled={pending}>
-          <option value={String(24 * 60 * 60)}>{copy.hours24}</option>
-          <option value={String(3 * 24 * 60 * 60)}>{copy.days3}</option>
-          <option value={String(7 * 24 * 60 * 60)}>{copy.days7}</option>
-        </select>
-      </label>
+      <div className="quickRetentionLabel"><GlassSelect label={copy.retentionLabel} value={ttl} onChange={setTtl} disabled={pending} options={[{ value: String(24 * 60 * 60), label: copy.hours24 }, { value: String(3 * 24 * 60 * 60), label: copy.days3 }, { value: String(7 * 24 * 60 * 60), label: copy.days7 }]} /></div>
       <div className="suggestionActions">
         <button onClick={() => void onAccept(Number(ttl))} disabled={pending}><Check size={14} /> {copy.accept}</button>
         <button className="dangerText" onClick={() => void onDismiss()} disabled={pending}><Trash2 size={14} /> {copy.reject}</button>
@@ -1114,94 +1319,89 @@ function QuickSuggestionRow({ item, copy, pending, onAccept, onDismiss }: { item
   );
 }
 
-function SettingsFields({ settings, status, modelOptions, copy, busy, dataDirectoryDirty, onChange, onSave, onTest, onRefreshModels, onPasteKey, onChooseDataDirectory, onResetDataDirectory }: { settings: AppSettings; status: string; modelOptions: string[]; copy: Copy; busy: boolean; dataDirectoryDirty: boolean; onChange: (patch: Partial<AppSettings>) => void; onSave: () => void; onTest: () => void; onRefreshModels: () => void; onPasteKey: () => void; onChooseDataDirectory: () => void; onResetDataDirectory: () => void; }) {
-  const dataDirectoryTarget = settings.dataDirectory.trim() || copy.useDefaultPath;
+function FeedbackButton({ actionKey, feedback, pending, disabled, label, workingLabel, icon, className = '', onClick }: { actionKey: string; feedback: Record<string, { tone: 'success' | 'error'; label: string; detail?: string }>; pending: boolean; disabled: boolean; label: string; workingLabel: string; icon?: ReactNode; className?: string; onClick: () => void }) {
+  const result = feedback[actionKey];
+  return <button className={`feedbackButton ${className} ${pending ? 'isBusy' : ''} ${result ? `is${result.tone === 'success' ? 'Success' : 'Error'}` : ''}`} type="button" onClick={onClick} disabled={disabled} aria-live="polite" title={result?.detail ?? result?.label ?? label}>
+    {pending ? <span className="buttonSpinner" aria-hidden="true" /> : result ? (result.tone === 'success' ? <Check size={14} aria-hidden="true" /> : <X size={14} aria-hidden="true" />) : icon}
+    <span className="feedbackLabel">{pending ? workingLabel : result?.label ?? label}</span>
+  </button>;
+}
 
+function SettingsFields({ settings, feedback, pendingKeys, modelOptions, copy, busy, dataDirectoryDirty, onChange, onToggle, onSave, onApplyPath, onTest, onRefreshModels, onPasteKey, onChooseDataDirectory, onResetDataDirectory }: { settings: AppSettings; feedback: Record<string, { tone: 'success' | 'error'; label: string; detail?: string }>; pendingKeys: Set<string>; modelOptions: string[]; copy: Copy; busy: boolean; dataDirectoryDirty: boolean; onChange: (patch: Partial<AppSettings>) => void; onToggle: (key: 'captureEnabled' | 'runAtStartup' | 'hideConsoleWindow', value: boolean) => void; onSave: () => void; onApplyPath: () => void; onTest: () => void; onRefreshModels: () => void; onPasteKey: () => void; onChooseDataDirectory: () => void; onResetDataDirectory: () => void; }) {
   return (
     <div className="settingsFields">
-      <datalist id="mimo-models">
-        {modelOptions.map((model) => <option key={model} value={model} />)}
-      </datalist>
-
       <label className="toggleRow">
-        <input type="checkbox" checked={settings.captureEnabled} disabled={busy} onChange={(event) => onChange({ captureEnabled: event.target.checked })} />
+        <input type="checkbox" checked={settings.captureEnabled} disabled={busy} onChange={(event) => onToggle('captureEnabled', event.target.checked)} />
         <span><Power size={14} /> {copy.captureClipboard}</span>
       </label>
 
       <label className="toggleRow">
-        <input type="checkbox" checked={settings.runAtStartup} disabled={busy} onChange={(event) => onChange({ runAtStartup: event.target.checked })} />
+        <input type="checkbox" checked={settings.runAtStartup} disabled={busy} onChange={(event) => onToggle('runAtStartup', event.target.checked)} />
         <span>{copy.startWithWindows}</span>
       </label>
       <label className="toggleRow">
-        <input type="checkbox" checked={settings.hideConsoleWindow} disabled={busy} onChange={(event) => onChange({ hideConsoleWindow: event.target.checked })} />
+        <input type="checkbox" checked={settings.hideConsoleWindow} disabled={busy} onChange={(event) => onToggle('hideConsoleWindow', event.target.checked)} />
         <span>{copy.hideConsoleWindow}</span>
       </label>
 
-      <label className="fieldLabel">
+      <div className="fieldLabel">
         {copy.language}
-        <select value={settings.language} disabled={busy} onChange={(event) => onChange({ language: event.target.value as AppSettings['language'] })}>
-          <option value="zh">中文</option>
-          <option value="en">EN</option>
-        </select>
-      </label>
+        <GlassSelect label={copy.language} value={settings.language} disabled={busy} onChange={(value) => onChange({ language: value as AppSettings['language'] })} options={[{ value: 'zh', label: '中文' }, { value: 'en', label: 'EN' }]} />
+      </div>
 
-      <label className="fieldLabel">
+      <div className="fieldLabel">
         {copy.protocol}
-        <select value={settings.aiProtocol} disabled={busy} onChange={(event) => onChange({ aiProtocol: event.target.value as AppSettings['aiProtocol'] })}>
-          <option value="openai">{copy.openaiCompatible}</option>
-          <option value="anthropic">{copy.anthropicCompatible}</option>
-        </select>
-      </label>
+        <GlassSelect label={copy.protocol} value={settings.aiProtocol} disabled={busy} onChange={(value) => onChange({ aiProtocol: value as AppSettings['aiProtocol'] })} options={[{ value: 'openai', label: copy.openaiCompatible }, { value: 'anthropic', label: copy.anthropicCompatible }]} />
+      </div>
 
-      <label className="fieldLabel">
+      <div className="fieldLabel">
         {copy.openaiBaseUrl}
-        <input value={settings.openaiBaseUrl} disabled={busy} onChange={(event) => onChange({ openaiBaseUrl: event.target.value })} />
-      </label>
-      <label className="fieldLabel">
+        <input aria-label={copy.openaiBaseUrl} value={settings.openaiBaseUrl} disabled={busy} onChange={(event) => onChange({ openaiBaseUrl: event.target.value })} />
+      </div>
+      <div className="fieldLabel">
         {copy.anthropicBaseUrl}
-        <input value={settings.anthropicBaseUrl} disabled={busy} onChange={(event) => onChange({ anthropicBaseUrl: event.target.value })} />
-      </label>
-      <label className="fieldLabel">
+        <input aria-label={copy.anthropicBaseUrl} value={settings.anthropicBaseUrl} disabled={busy} onChange={(event) => onChange({ anthropicBaseUrl: event.target.value })} />
+      </div>
+      <div className="fieldLabel">
         {copy.apiKey}
         <span className="secretRow">
-          <input type="password" value={settings.apiKey} disabled={busy} onChange={(event) => onChange({ apiKey: event.target.value })} />
-          <button type="button" onClick={onPasteKey} disabled={busy}>{copy.paste}</button>
+          <input aria-label={copy.apiKey} type="password" value={settings.apiKey} disabled={busy} onChange={(event) => onChange({ apiKey: event.target.value })} />
+          <FeedbackButton actionKey="settings:pasteKey" feedback={feedback} pending={pendingKeys.has('settings:pasteKey')} disabled={busy} label={copy.paste} workingLabel={copy.actionWorking} onClick={onPasteKey} />
         </span>
-      </label>
-      <label className="fieldLabel">
+      </div>
+      <div className="fieldLabel">
         {copy.searchArchiveModel}
-        <input list="mimo-models" value={settings.searchModel} disabled={busy} onChange={(event) => onChange({ searchModel: event.target.value })} />
-      </label>
+        <ModelInput label={copy.searchArchiveModel} showOptionsLabel={copy.showModelOptions} hideOptionsLabel={copy.hideModelOptions} value={settings.searchModel} options={modelOptions} disabled={busy} onChange={(value) => onChange({ searchModel: value })} />
+      </div>
       <div className="fieldLabel">
         {copy.localOcr}
         <span>{copy.localOcrDescription}</span>
       </div>
       <div className="settingsActions">
-        <button onClick={onSave} disabled={busy}><Save size={14} /> {copy.save}</button>
-        <button onClick={onTest} disabled={busy}><TestTube2 size={14} /> {copy.test}</button>
-        <button onClick={onRefreshModels} disabled={busy}><RefreshCw size={14} /> {copy.models}</button>
+        <FeedbackButton actionKey="settings:save" feedback={feedback} pending={pendingKeys.has('settings:save')} disabled={busy} label={copy.save} workingLabel={copy.actionWorking} icon={<Save size={14} />} onClick={onSave} />
+        <FeedbackButton actionKey="settings:test" feedback={feedback} pending={pendingKeys.has('settings:test')} disabled={busy} label={copy.test} workingLabel={copy.actionWorking} icon={<TestTube2 size={14} />} onClick={onTest} />
+        <FeedbackButton actionKey="settings:models" feedback={feedback} pending={pendingKeys.has('settings:models')} disabled={busy} label={copy.models} workingLabel={copy.actionWorking} icon={<RefreshCw size={14} />} onClick={onRefreshModels} />
       </div>
 
-      <label className="fieldLabel dataDirectoryField">
+      <div className="fieldLabel dataDirectoryField">
         {copy.dataDirectory}
         <div className="pathPickerRow">
           <input
+            aria-label={copy.dataDirectory}
             value={settings.dataDirectory}
             placeholder={settings.resolvedDataDirectory || copy.useDefaultPath}
             disabled={busy}
             onChange={(event) => onChange({ dataDirectory: event.target.value })}
           />
           <div className="pathPickerActions">
-            <button type="button" onClick={onChooseDataDirectory} disabled={busy}>{copy.chooseFolder}</button>
-            <button type="button" onClick={onResetDataDirectory} disabled={busy || !settings.dataDirectory}>{copy.useDefaultPath}</button>
+            <FeedbackButton actionKey="settings:path" feedback={feedback} pending={pendingKeys.has('settings:path')} disabled={busy} label={copy.chooseFolder} workingLabel={copy.actionWorking} onClick={onChooseDataDirectory} />
+            <FeedbackButton actionKey="settings:resetPath" feedback={feedback} pending={false} disabled={busy || !settings.dataDirectory} label={copy.useDefaultPath} workingLabel={copy.actionWorking} onClick={onResetDataDirectory} />
           </div>
-          <button type="button" className="pathApplyButton" onClick={onSave} disabled={busy || !dataDirectoryDirty}>{copy.dataDirectoryApply}</button>
+          <FeedbackButton actionKey="settings:applyPath" className="pathApplyButton" feedback={feedback} pending={pendingKeys.has('settings:applyPath')} disabled={busy || !dataDirectoryDirty} label={copy.dataDirectoryApply} workingLabel={copy.actionWorking} onClick={onApplyPath} />
         </div>
         <div className="fieldHelp">{copy.dataDirectoryHelp}</div>
-        {dataDirectoryDirty ? <div className="fieldHelp dataDirectoryPending">{copy.dataDirectoryPending(dataDirectoryTarget)}</div> : null}
         <div className="fieldHelp">{copy.currentDataDirectory}: {settings.resolvedDataDirectory}</div>
-      </label>
-      {status ? <div className="settingsStatus">{status}</div> : null}
+      </div>
     </div>
   );
 }
@@ -1255,7 +1455,7 @@ function ImagePreview({ item, copy, pasteOcrPending, ocrExpanded, onToggleOcr, o
   }, [item.id, item.imagePath]);
 
   return (
-    <div className={`imageCard ${ocrText ? 'withOcr' : ''}`}>
+    <div className={`imageCard ${ocrText ? 'withOcr' : ''} ${ocrExpanded ? 'ocrExpanded' : ''}`}>
       <div className="imagePreviewPane">
         <button
           className="imageThumbButton"
@@ -1263,7 +1463,7 @@ function ImagePreview({ item, copy, pasteOcrPending, ocrExpanded, onToggleOcr, o
             event.stopPropagation();
             if (src && !imageFailed) setExpanded((value) => !value);
           }}
-          title={copy.fullPreview}
+          title={expanded ? copy.stopPreview : copy.fullPreview}
           type="button"
         >
           {src && !imageFailed ? <img src={src} alt={item.preview} onError={() => {
@@ -1278,7 +1478,15 @@ function ImagePreview({ item, copy, pasteOcrPending, ocrExpanded, onToggleOcr, o
           }} /> : <ImageIcon size={42} />}
         </button>
         <span>{copy.imageDimensions(item.width, item.height)}</span>
+        {ocrText && ocrExpanded ? (
+          <button className="ocrCollapseButton" type="button" aria-label={copy.collapseOcrText} title={copy.collapseOcrText} aria-expanded={true} onClick={(event) => { event.stopPropagation(); onToggleOcr(); }}><ScanText size={13} aria-hidden="true" /><ChevronUp size={13} aria-hidden="true" /></button>
+        ) : null}
       </div>
+      {expanded && src && !imageFailed ? (
+        <button className="inlineImagePreview" onClick={(event) => { event.stopPropagation(); setExpanded(false); }} title={copy.stopPreview} type="button">
+          <img src={src} alt={copy.fullPreview} />
+        </button>
+      ) : null}
       {ocrText ? (
         <>
           <div className="imageOcrDivider" aria-hidden="true" />
@@ -1288,18 +1496,10 @@ function ImagePreview({ item, copy, pasteOcrPending, ocrExpanded, onToggleOcr, o
               <p ref={ocrTextRef}>{ocrText}</p>
             </button>
             {ocrOverflow && !ocrExpanded ? (
-              <button className="ocrRevealButton" type="button" aria-label={copy.expandRecord} title={copy.expandRecord} aria-expanded={false} onClick={(event) => { event.stopPropagation(); onToggleOcr(); }}><span aria-hidden="true">···</span></button>
-            ) : null}
-            {ocrOverflow && ocrExpanded ? (
-              <button className="ocrCollapseButton" type="button" aria-label={copy.collapseRecord} aria-expanded={true} onClick={(event) => { event.stopPropagation(); onToggleOcr(); }}>{copy.collapseRecord}</button>
+              <button className="ocrRevealButton" type="button" aria-label={copy.expandOcrText} title={copy.expandOcrText} aria-expanded={false} onClick={(event) => { event.stopPropagation(); onToggleOcr(); }}><ScanText size={13} aria-hidden="true" /><ChevronDown size={12} aria-hidden="true" /></button>
             ) : null}
           </div>
         </>
-      ) : null}
-      {expanded && src && !imageFailed ? (
-        <button className="inlineImagePreview" onClick={(event) => { event.stopPropagation(); setExpanded(false); }} title={copy.fullPreview} type="button">
-          <img src={src} alt={copy.fullPreview} />
-        </button>
       ) : null}
     </div>
   );
@@ -1334,12 +1534,13 @@ function FolderDropTarget({ folder, items, copy, folderDeleting, isItemPastePend
               </button>
             </div>
           ))}
-          <select
+          <GlassSelect
             className="folderMoveSelect"
+            label={copy.moveSelected}
             value={moveValue}
             disabled={movePending}
-            onChange={(event) => {
-              const value = event.target.value;
+            options={[{ value: '', label: copy.moveSelected }, ...items.map((item) => ({ value: item.id, label: item.preview.slice(0, 80) }))]}
+            onChange={(value) => {
               setMoveValue(value);
               if (!value) return;
               setMovePending(true);
@@ -1348,17 +1549,14 @@ function FolderDropTarget({ folder, items, copy, folderDeleting, isItemPastePend
                 setMoveValue('');
               });
             }}
-          >
-            <option value="">{copy.moveSelected}</option>
-            {items.map((item) => <option key={item.id} value={item.id}>{item.preview.slice(0, 42)}</option>)}
-          </select>
+          />
         </div>
       ) : null}
     </div>
   );
 }
 
-function QuickPoolRow({ item, copy, pending, pastePending, onPaste, onStar, onUpdate, onDelete }: { item: QuickItem; copy: Copy; pending: boolean; pastePending: boolean; onPaste: (content: string) => Promise<void>; onStar: () => Promise<void>; onUpdate: (item: QuickItem) => void; onDelete: () => Promise<void> }) {
+function QuickPoolRow({ item, copy, pending, pastePending, onPaste, onStar, onUpdate, onError, onDelete }: { item: QuickItem; copy: Copy; pending: boolean; pastePending: boolean; onPaste: (content: string) => Promise<void>; onStar: () => Promise<void>; onUpdate: (item: QuickItem) => void; onError: (error: unknown) => void; onDelete: () => Promise<void> }) {
   const [content, setContent] = useState(item.content);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1371,6 +1569,8 @@ function QuickPoolRow({ item, copy, pending, pastePending, onPaste, onStar, onUp
       const updated = await call<QuickItem>('update_quick_item', { id: item.id, content, ttl });
       onUpdate(updated);
       setEditing(false);
+    } catch (error) {
+      onError(error);
     } finally {
       setSaving(false);
     }

@@ -342,23 +342,13 @@ pub fn restart_application(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .clone();
-    ai::test_connection(&settings).await
+pub async fn test_ai_connection(settings: AppSettings) -> Result<String, String> {
+    ai::test_connection(&settings.normalized()).await
 }
 
 #[tauri::command]
-pub async fn list_ai_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .clone();
-    match ai::list_models(&settings).await {
+pub async fn list_ai_models(settings: AppSettings) -> Result<Vec<String>, String> {
+    match ai::list_models(&settings.normalized()).await {
         Ok(models) => Ok(models),
         Err(error) if error.contains("API key is empty") => Ok(ai::known_models()),
         Err(error) => Err(error),
@@ -455,14 +445,24 @@ pub async fn search_ai_semantic(
             .db
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
-        db.get_history(300, 0).map_err(String::from)?
+        db.get_history(0, 0).map_err(String::from)?
     };
     let settings = state
         .settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .clone();
-    ai::semantic_search(&settings, &query, records).await
+    let mut matched = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for batch in ai_record_batches(split_long_search_records(records), 50) {
+        let batch_ids: std::collections::HashSet<_> = batch.iter().map(|item| item.id.clone()).collect();
+        for id in ai::semantic_search(&settings, &query, batch).await? {
+            if batch_ids.contains(&id) && seen.insert(id.clone()) {
+                matched.push(id);
+            }
+        }
+    }
+    Ok(matched)
 }
 
 #[tauri::command]
@@ -475,7 +475,7 @@ pub async fn trigger_ai_categorize(
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
         (
-            db.recent_uncategorized(80).map_err(String::from)?,
+            db.recent_uncategorized(300).map_err(String::from)?,
             db.get_folders().map_err(String::from)?,
         )
     };
@@ -484,7 +484,24 @@ pub async fn trigger_ai_categorize(
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .clone();
-    let assignments = ai::categorize(&settings, records, folders).await?;
+    let mut known_folders = folders;
+    let mut assignments = Vec::new();
+    for batch in ai_record_batches(records, 25) {
+        let batch_ids: std::collections::HashSet<_> = batch.iter().map(|item| item.id.clone()).collect();
+        for assignment in ai::categorize(&settings, batch, known_folders.clone()).await? {
+            if !batch_ids.contains(&assignment.item_id) {
+                continue;
+            }
+            if !known_folders.iter().any(|folder| folder.name == assignment.folder_name) {
+                known_folders.push(crate::models::Folder {
+                    id: assignment.folder_name.clone(),
+                    name: assignment.folder_name.clone(),
+                    created_at: 0,
+                });
+            }
+            assignments.push(assignment);
+        }
+    }
     let db = state
         .db
         .lock()
@@ -500,6 +517,53 @@ pub async fn trigger_ai_categorize(
         updated.push(item);
     }
     Ok(updated)
+}
+
+const AI_BATCH_MAX_CHARS: usize = 50_000;
+
+fn ai_record_batches(records: Vec<ClipboardItem>, max_records: usize) -> Vec<Vec<ClipboardItem>> {
+    let mut batches = Vec::new();
+    let mut batch = Vec::new();
+    let mut batch_chars = 0;
+    for item in records {
+        let chars = item.content.as_deref().or(item.ocr_text.as_deref())
+            .unwrap_or(&item.preview).chars().count();
+        if !batch.is_empty() && (batch.len() >= max_records || batch_chars + chars > AI_BATCH_MAX_CHARS) {
+            batches.push(std::mem::take(&mut batch));
+            batch_chars = 0;
+        }
+        batch_chars += chars;
+        batch.push(item);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    batches
+}
+
+fn split_long_search_records(records: Vec<ClipboardItem>) -> Vec<ClipboardItem> {
+    const CHUNK_CHARS: usize = AI_BATCH_MAX_CHARS - 1_000;
+    const OVERLAP_CHARS: usize = 200;
+    let mut parts = Vec::new();
+    for item in records {
+        let text = item.content.as_deref().or(item.ocr_text.as_deref())
+            .unwrap_or(&item.preview);
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() <= AI_BATCH_MAX_CHARS {
+            parts.push(item);
+            continue;
+        }
+        let mut start = 0;
+        while start < chars.len() {
+            let end = (start + CHUNK_CHARS).min(chars.len());
+            let mut part = item.clone();
+            part.content = Some(chars[start..end].iter().collect());
+            parts.push(part);
+            if end == chars.len() { break; }
+            start = end - OVERLAP_CHARS;
+        }
+    }
+    parts
 }
 
 #[tauri::command]
@@ -532,4 +596,43 @@ pub async fn trigger_ocr(
         .map_err(|_| "database lock poisoned".to_string())?;
     db.update_image_ocr_text(&image_id, &text)
         .map_err(String::from)
+}
+
+#[cfg(test)]
+mod ai_batch_tests {
+    use super::{ai_record_batches, split_long_search_records, ClipboardItem, AI_BATCH_MAX_CHARS};
+
+    fn item(id: usize, content: String) -> ClipboardItem {
+        ClipboardItem {
+            id: id.to_string(), kind: "text".to_string(), content: Some(content),
+            image_path: None, preview: String::new(), is_star: false, folder_id: None,
+            created_at: 0, updated_at: 0, expires_at: None, mime_type: None,
+            width: None, height: None, image_hash: None, ocr_text: None,
+        }
+    }
+
+    #[test]
+    fn all_records_are_kept_across_search_and_archive_batches() {
+        let records = (0..300).map(|id| item(id, "some text".to_string())).collect::<Vec<_>>();
+        let search = ai_record_batches(records.clone(), 50);
+        let archive = ai_record_batches(records, 25);
+        assert_eq!(search.iter().map(Vec::len).sum::<usize>(), 300);
+        assert_eq!(archive.iter().map(Vec::len).sum::<usize>(), 300);
+        assert!(search.iter().all(|batch| batch.len() <= 50));
+        assert!(archive.iter().all(|batch| batch.len() <= 25));
+    }
+
+    #[test]
+    fn long_search_records_keep_their_full_text_across_chunks() {
+        let text = format!("{}needle{}", "中".repeat(60_000), "文".repeat(60_000));
+        let parts = split_long_search_records(vec![item(1, text.clone())]);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|part| part.content.as_ref().unwrap().chars().count() <= AI_BATCH_MAX_CHARS));
+        assert!(parts.iter().any(|part| part.content.as_ref().unwrap().contains("needle")));
+        let mut rebuilt = String::new();
+        for (index, part) in parts.iter().enumerate() {
+            rebuilt.extend(part.content.as_ref().unwrap().chars().skip(if index == 0 { 0 } else { 200 }));
+        }
+        assert_eq!(rebuilt, text);
+    }
 }

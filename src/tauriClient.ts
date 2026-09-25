@@ -95,6 +95,15 @@ export async function onNewItem(callback: (item: ClipboardItem) => void): Promis
   return unlisten;
 }
 
+export async function onPanelShown(callback: () => void): Promise<() => void> {
+  if (!hasTauri) {
+    const handler = () => callback();
+    window.addEventListener('smart-clipboard-panel-shown', handler);
+    return () => window.removeEventListener('smart-clipboard-panel-shown', handler);
+  }
+  return listen('panel-shown', callback);
+}
+
 export async function onQuickPoolExtracted(callback: (item: QuickItem) => void): Promise<() => void> {
   if (!hasTauri) return () => undefined;
   const unlisten = await listen<QuickItem>('on_quick_pool_extracted', (event) => callback(event.payload));

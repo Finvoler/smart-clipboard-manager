@@ -3,7 +3,7 @@
 //! 这个文件是项目的持久化核心：历史记录、文件夹、临时池、待确认候选、
 //! 应用设置、图片元数据和 OCR 文本都在这里落库。
 
-use std::{fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use image::ImageBuffer;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -332,16 +332,23 @@ impl Database {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
-        let sql = format!(
-            "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
-             FROM items WHERE id IN ({})",
-            placeholders.join(", ")
-        );
-        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
-        let mut statement = self.conn.prepare(&sql)?;
-        let rows = statement.query_map(params.as_slice(), row_to_item)?;
-        collect_rows(rows)
+        let mut found = HashMap::new();
+        for chunk in ids.chunks(500) {
+            let placeholders = (1..=chunk.len()).map(|index| format!("?{index}"))
+                .collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "SELECT id, kind, content, image_path, preview, is_star, folder_id, created_at, updated_at, expires_at, mime_type, width, height, image_hash, ocr_text
+                 FROM items WHERE id IN ({placeholders})"
+            );
+            let params: Vec<&dyn rusqlite::types::ToSql> = chunk.iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql).collect();
+            let mut statement = self.conn.prepare(&sql)?;
+            for row in statement.query_map(params.as_slice(), row_to_item)? {
+                let item = row?;
+                found.insert(item.id.clone(), item);
+            }
+        }
+        Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
     }
 
     fn find_recent_duplicate_text_item(
@@ -1250,6 +1257,21 @@ mod tests {
         assert_eq!(all.len(), 130);
         assert!(all.iter().any(|item| item.id == starred_id && item.is_star));
         assert!(all.iter().any(|item| item.id == foldered_id && item.folder_id.as_deref() == Some(folder.id.as_str())));
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn many_ai_matches_load_in_requested_order() {
+        let temp = std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let mut db = Database::open(temp.join("test.sqlite"), temp.join("images")).unwrap();
+        let mut ids = Vec::new();
+        for index in 0..520 {
+            ids.push(db.insert_text_item(&format!("AI match {index}")).unwrap().0.id);
+        }
+        ids.reverse();
+        let matches = db.get_items_by_ids(&ids).unwrap();
+        assert_eq!(matches.len(), ids.len());
+        assert!(matches.iter().zip(ids.iter()).all(|(item, id)| &item.id == id));
         let _ = std::fs::remove_dir_all(temp);
     }
 

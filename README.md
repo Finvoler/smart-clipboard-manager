@@ -25,7 +25,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.3.1-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.3.2-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -50,14 +50,17 @@ API documentation: [Windows OcrEngine](https://learn.microsoft.com/en-us/uwp/api
 - `Record clipboard history`: keep on for normal clipboard capture.
 - `Start with Windows`: keep on if the app should run after login.
 - `Hide console window`: kept for compatibility; release builds are compiled as a Windows GUI app, and startup shortcuts use hidden `--startup` mode.
+- These three switches save immediately. API fields and other editable settings use the `Save` button; `Test` saves the entered API fields before checking the connection.
 - `Language`: choose Chinese or English UI.
 - `Protocol`: choose OpenAI compatible or Anthropic compatible.
 - `OpenAI base URL`: default is `https://api.xiaomimimo.com/v1`.
 - `Anthropic base URL`: default is `https://api.xiaomimimo.com/anthropic`.
 - `API key`: paste your provider key locally.
 - `Search / archive model`: model used by AI search and AI archive.
+- AI semantic search checks the full saved history in bounded requests; AI archive processes up to 300 recent uncategorized records per run. Large histories can require multiple paid model requests and take longer to finish. Ordinary local search does not call the model.
+- Ordinary history expires after 30 days, regardless of record count; copying the same item again refreshes its retention time. Starred records are exempt. Moving a non-starred record into a folder does not stop expiration.
 - `Image OCR`: runs locally on demand using installed Windows OCR language packs. Prefers Chinese (also reads Latin letters), then the user's Windows language, then another installed recognizer. No API key or bundled OCR engine is used.
-- `File save path`: optional custom directory for the local database, image cache, and later data files. It is separated from the API save/test/model controls because it belongs to local storage rather than model configuration. Use `Choose folder`, or type a path manually, then click `Save path and restart`. The app will show the pending target, ask for confirmation, migrate existing data, and restart. `Current active data directory` only changes after the restart succeeds.
+- `File save path`: optional custom directory for the local database, image cache, and later data files. Choose or type an **existing folder**, then click `Save path and restart` and confirm the destination. Invalid or nonexistent paths fail in the button without creating a folder or restarting. Unsaved edits are discarded when the panel is closed and reopened. `Current active data directory` only changes after a successful restart.
 
 ## Huorong / Security Software Notes
 
@@ -151,10 +154,10 @@ git push -u origin main
 ### Publish a release asset
 
 1. Build the release exe with `npm run tauri -- build`.
-2. Create a zip containing `smart_clipboard.exe` and this README.
+2. Create a zip containing `SmartClipboard.exe`, this README, and the release notes.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.3.1`.
-5. Upload `SmartClipboard-v0.3.1-windows-x64.zip`.
+4. Tag version: `v0.3.2`.
+5. Upload `SmartClipboard-v0.3.2-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:
