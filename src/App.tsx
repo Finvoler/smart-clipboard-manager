@@ -257,6 +257,7 @@ export function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [pasteResetToken, setPasteResetToken] = useState(0);
   const [visiblyClippedIds, setVisiblyClippedIds] = useState<Set<string>>(() => new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -761,6 +762,12 @@ export function App() {
     await runWithPending(pendingKey, async () => {
       try {
         await call('execute_paste', { itemId: id, overrideText });
+        setExpandedIds(new Set());
+        setPasteResetToken((current) => current + 1);
+        setEditingId(null);
+        scrollParentRef.current?.scrollTo(0, 0);
+        virtualizer.scrollToOffset(0);
+        setSelectedId(items[0]?.id ?? null);
       } catch (error) {
         showStatus(error instanceof Error ? error.message : String(error), 'error');
       }
@@ -1065,7 +1072,7 @@ export function App() {
                         </div>
                       </div>
                     ) : item.kind === 'image' ? (
-                      <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} ocrExpanded={expandedIds.has(item.id)} onToggleOcr={() => void runWithPending(`expand:${item.id}`, () => toggleRecordExpanded(item))} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
+                      <ImagePreview item={item} copy={copy} pasteOcrPending={isPending(`paste:ocr:${item.id}`)} ocrExpanded={expandedIds.has(item.id)} pasteResetToken={pasteResetToken} onToggleOcr={() => void runWithPending(`expand:${item.id}`, () => toggleRecordExpanded(item))} onPasteOcr={(text) => void executePaste('', text, `paste:ocr:${item.id}`)} />
                     ) : (
                       <div className="markdownButton" role="button" tabIndex={-1}>
                         {canExpandText && !expandedIds.has(item.id) ? <p className="recordPreviewText">{item.preview}</p> : <RecordMarkdown text={item.content ?? item.preview} />}
@@ -1406,10 +1413,11 @@ function SettingsFields({ settings, feedback, pendingKeys, modelOptions, copy, b
   );
 }
 
-function ImagePreview({ item, copy, pasteOcrPending, ocrExpanded, onToggleOcr, onPasteOcr }: { item: ClipboardItem; copy: Copy; pasteOcrPending: boolean; ocrExpanded: boolean; onToggleOcr: () => void; onPasteOcr: (text: string) => void }) {
+function ImagePreview({ item, copy, pasteOcrPending, ocrExpanded, pasteResetToken, onToggleOcr, onPasteOcr }: { item: ClipboardItem; copy: Copy; pasteOcrPending: boolean; ocrExpanded: boolean; pasteResetToken: number; onToggleOcr: () => void; onPasteOcr: (text: string) => void }) {
   const [dataSrc, setDataSrc] = useState('');
   const [imageFailed, setImageFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => setExpanded(false), [pasteResetToken]);
   const [ocrOverflow, setOcrOverflow] = useState(false);
   const ocrPaneRef = useRef<HTMLDivElement | null>(null);
   const ocrTextRef = useRef<HTMLParagraphElement | null>(null);

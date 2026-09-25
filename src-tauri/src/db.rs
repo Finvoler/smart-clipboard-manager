@@ -121,12 +121,18 @@ impl Database {
         )?;
         self.ensure_column("items", "image_hash", "TEXT")?;
         self.ensure_column("items", "ocr_text", "TEXT")?;
+        self.ensure_column("quick_items", "source_item_id", "TEXT REFERENCES items(id) ON DELETE CASCADE")?;
+        self.ensure_column("quick_suggestions", "source_item_id", "TEXT REFERENCES items(id) ON DELETE CASCADE")?;
         self.ensure_column("app_settings", "language", "TEXT NOT NULL DEFAULT 'zh'")?;
         self.ensure_column("app_settings", "data_directory", "TEXT NOT NULL DEFAULT ''")?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_items_image_hash ON items(image_hash)",
             [],
         )?;
+        // Older databases may still carry a deadline for protected records.
+        self.conn.execute("UPDATE items SET expires_at = NULL WHERE is_star = 1 OR folder_id IS NOT NULL", [])?;
+        self.conn.execute("UPDATE quick_items SET source_item_id = (SELECT id FROM items WHERE kind = 'text' AND content = quick_items.content ORDER BY created_at DESC LIMIT 1) WHERE source_item_id IS NULL", [])?;
+        self.conn.execute("UPDATE quick_suggestions SET source_item_id = (SELECT id FROM items WHERE kind = 'text' AND content = quick_suggestions.content ORDER BY created_at DESC LIMIT 1) WHERE source_item_id IS NULL", [])?;
         self.ensure_settings_row()?;
         Ok(())
     }
@@ -222,9 +228,8 @@ impl Database {
         text: &str,
     ) -> Result<(ClipboardItem, Vec<QuickSuggestion>), AppError> {
         let now = now_ts();
-        let quick_items = self.observe_text_for_quick_pool(text)?;
         if let Some(existing) = self.find_recent_duplicate_text_item(text)? {
-            let expires_at = if existing.is_star {
+            let expires_at = if existing.is_star || existing.folder_id.is_some() {
                 None
             } else {
                 Some(now + RETENTION_SECONDS)
@@ -234,6 +239,7 @@ impl Database {
                 params![existing.id, now, expires_at],
             )?;
             let item = self.get_item(&existing.id)?.ok_or(AppError::NotFound)?;
+            let quick_items = self.observe_text_for_quick_pool(text, Some(&item.id))?;
             return Ok((item, quick_items));
         }
 
@@ -244,6 +250,7 @@ impl Database {
       params![id, text, preview, now, now + RETENTION_SECONDS],
     )?;
         let item = self.get_item(&id)?.ok_or(AppError::NotFound)?;
+        let quick_items = self.observe_text_for_quick_pool(text, Some(&item.id))?;
         Ok((item, quick_items))
     }
 
@@ -261,7 +268,7 @@ impl Database {
         let now = now_ts();
         let image_hash = make_image_hash(width, height, bytes);
         if let Some(existing) = self.find_recent_duplicate_image_item(&image_hash)? {
-            let expires_at = if existing.is_star {
+            let expires_at = if existing.is_star || existing.folder_id.is_some() {
                 None
             } else {
                 Some(now + RETENTION_SECONDS)
@@ -441,8 +448,8 @@ impl Database {
     }
 
     pub fn toggle_star(&self, id: &str, is_star: bool) -> Result<ClipboardItem, AppError> {
-        let _item = self.get_item(id)?.ok_or(AppError::NotFound)?;
-        let expires_at = if is_star {
+        let item = self.get_item(id)?.ok_or(AppError::NotFound)?;
+        let expires_at = if is_star || item.folder_id.is_some() {
             None
         } else {
             Some(now_ts() + RETENTION_SECONDS)
@@ -485,7 +492,7 @@ impl Database {
     pub fn delete_folder(&self, id: &str) -> Result<(), AppError> {
         let now = now_ts();
         self.conn.execute(
-            "UPDATE items SET folder_id = NULL, expires_at = CASE WHEN is_star = 1 THEN NULL WHEN expires_at IS NULL THEN ?2 ELSE expires_at END, updated_at = ?3 WHERE folder_id = ?1",
+            "UPDATE items SET folder_id = NULL, expires_at = CASE WHEN is_star = 1 THEN NULL ELSE ?2 END, updated_at = ?3 WHERE folder_id = ?1",
             params![id, now + RETENTION_SECONDS, now],
         )?;
         let changed = self
@@ -530,10 +537,10 @@ impl Database {
         folder_id: Option<String>,
     ) -> Result<ClipboardItem, AppError> {
         let item = self.get_item(item_id)?.ok_or(AppError::NotFound)?;
-        let expires_at = if item.is_star {
+        let expires_at = if item.is_star || folder_id.is_some() {
             None
         } else {
-            item.expires_at.or(Some(now_ts() + RETENTION_SECONDS))
+            Some(now_ts() + RETENTION_SECONDS)
         };
         self.conn.execute(
             "UPDATE items SET folder_id = ?2, expires_at = ?3, updated_at = ?4 WHERE id = ?1",
@@ -587,10 +594,10 @@ impl Database {
     }
 
     pub fn accept_quick_suggestion(&self, id: &str, ttl: i64) -> Result<QuickItem, AppError> {
-        let suggestion = self.conn.query_row(
-            "SELECT id, content, hit_count, created_at, updated_at FROM quick_suggestions WHERE id = ?1",
+        let (suggestion, source_item_id) = self.conn.query_row(
+            "SELECT id, content, hit_count, created_at, updated_at, source_item_id FROM quick_suggestions WHERE id = ?1",
             params![id],
-            row_to_quick_suggestion,
+            |row| Ok((row_to_quick_suggestion(row)?, row.get::<_, Option<String>>(5)?)),
         ).optional()?.ok_or(AppError::NotFound)?;
 
         let quick_item = if let Some(existing) =
@@ -600,8 +607,8 @@ impl Database {
             let expires_at = if ttl <= 0 { None } else { Some(now + ttl) };
             let is_pinned = ttl <= 0;
             self.conn.execute(
-                "UPDATE quick_items SET hit_count = MAX(hit_count, ?2), updated_at = ?3, expires_at = ?4, is_pinned = ?5 WHERE id = ?1",
-                params![existing.id, suggestion.hit_count, now, expires_at, bool_to_int(is_pinned)],
+                "UPDATE quick_items SET hit_count = MAX(hit_count, ?2), updated_at = ?3, expires_at = ?4, is_pinned = ?5, source_item_id = COALESCE(?6, source_item_id) WHERE id = ?1",
+                params![existing.id, suggestion.hit_count, now, expires_at, bool_to_int(is_pinned), source_item_id],
             )?;
             self.conn.query_row(
                 "SELECT id, content, hit_count, created_at, updated_at, expires_at, is_pinned FROM quick_items WHERE id = ?1",
@@ -609,7 +616,7 @@ impl Database {
                 row_to_quick_item,
             )?
         } else {
-            self.insert_quick_item(&suggestion.content, suggestion.hit_count, ttl)?
+            self.insert_quick_item(&suggestion.content, suggestion.hit_count, ttl, source_item_id.as_deref())?
         };
 
         self.conn
@@ -720,7 +727,7 @@ impl Database {
         let now = now_ts();
         let expired = self.expired_image_paths(now)?;
         self.conn.execute(
-    "DELETE FROM items WHERE is_star = 0 AND (created_at < ?1 OR (expires_at IS NOT NULL AND expires_at <= ?2))",
+    "DELETE FROM items WHERE is_star = 0 AND folder_id IS NULL AND ((expires_at IS NULL AND created_at < ?1) OR expires_at <= ?2)",
       params![now - RETENTION_SECONDS, now],
     )?;
         for path in expired {
@@ -746,6 +753,7 @@ impl Database {
     pub fn observe_text_for_quick_pool(
         &self,
         text: &str,
+        source_item_id: Option<&str>,
     ) -> Result<Vec<QuickSuggestion>, AppError> {
         let now = now_ts();
         let mut extracted = Vec::new();
@@ -776,20 +784,24 @@ impl Database {
       )?;
 
             if hit_count >= QUICK_THRESHOLD {
+                let source_item_id = match source_item_id {
+                    Some(id) => Some(id.to_string()),
+                    None => self.find_text_item_by_content(&phrase)?.map(|item| item.id),
+                };
                 if let Some(existing_item) = self.find_quick_item_by_content(&phrase)? {
                     self.conn.execute(
-                        "UPDATE quick_items SET hit_count = MAX(hit_count, ?2), updated_at = ?3 WHERE id = ?1",
-                        params![existing_item.id, hit_count, now],
+                        "UPDATE quick_items SET hit_count = MAX(hit_count, ?2), updated_at = ?3, source_item_id = COALESCE(?4, source_item_id) WHERE id = ?1",
+                        params![existing_item.id, hit_count, now, source_item_id],
                     )?;
                 } else if let Some(existing_suggestion) =
                     self.find_quick_suggestion_by_content(&phrase)?
                 {
                     self.conn.execute(
-                        "UPDATE quick_suggestions SET hit_count = MAX(hit_count, ?2), updated_at = ?3 WHERE id = ?1",
-                        params![existing_suggestion.id, hit_count, now],
+                        "UPDATE quick_suggestions SET hit_count = MAX(hit_count, ?2), updated_at = ?3, source_item_id = COALESCE(?4, source_item_id) WHERE id = ?1",
+                        params![existing_suggestion.id, hit_count, now, source_item_id],
                     )?;
                 } else {
-                    let suggestion = self.insert_quick_suggestion(&phrase, hit_count)?;
+                    let suggestion = self.insert_quick_suggestion(&phrase, hit_count, source_item_id.as_deref())?;
                     extracted.push(suggestion);
                 }
             }
@@ -859,6 +871,7 @@ impl Database {
         content: &str,
         hit_count: i64,
         ttl: i64,
+        source_item_id: Option<&str>,
     ) -> Result<QuickItem, AppError> {
         let id = Uuid::new_v4().to_string();
         let now = now_ts();
@@ -868,8 +881,8 @@ impl Database {
             (Some(now + ttl), false)
         };
         self.conn.execute(
-            "INSERT INTO quick_items (id, content, hit_count, created_at, updated_at, expires_at, is_pinned) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
-            params![id, content, hit_count, now, expires_at, bool_to_int(is_pinned)],
+            "INSERT INTO quick_items (id, content, hit_count, created_at, updated_at, expires_at, is_pinned, source_item_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
+            params![id, content, hit_count, now, expires_at, bool_to_int(is_pinned), source_item_id],
     )?;
         Ok(QuickItem {
             id,
@@ -886,12 +899,13 @@ impl Database {
         &self,
         content: &str,
         hit_count: i64,
+        source_item_id: Option<&str>,
     ) -> Result<QuickSuggestion, AppError> {
         let id = Uuid::new_v4().to_string();
         let now = now_ts();
         self.conn.execute(
-            "INSERT INTO quick_suggestions (id, content, hit_count, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![id, content, hit_count, now],
+            "INSERT INTO quick_suggestions (id, content, hit_count, created_at, updated_at, source_item_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![id, content, hit_count, now, source_item_id],
         )?;
         Ok(QuickSuggestion {
             id,
@@ -904,7 +918,7 @@ impl Database {
 
     fn expired_image_paths(&self, now: i64) -> Result<Vec<String>, AppError> {
         let mut statement = self.conn.prepare(
-    "SELECT image_path FROM items WHERE kind = 'image' AND image_path IS NOT NULL AND is_star = 0 AND (created_at < ?1 OR (expires_at IS NOT NULL AND expires_at <= ?2))",
+    "SELECT image_path FROM items WHERE kind = 'image' AND image_path IS NOT NULL AND is_star = 0 AND folder_id IS NULL AND ((expires_at IS NULL AND created_at < ?1) OR expires_at <= ?2)",
     )?;
         let rows = statement.query_map(params![now - RETENTION_SECONDS, now], |row| {
             row.get::<_, String>(0)
@@ -1191,7 +1205,7 @@ mod tests {
             .move_to_folder(&item.id, Some(folder.id.clone()))
             .unwrap();
         assert_eq!(moved.folder_id.as_deref(), Some(folder.id.as_str()));
-        assert!(moved.expires_at.is_some());
+        assert!(moved.expires_at.is_none());
 
         db.delete_folder(&folder.id).unwrap();
         let restored = db.get_item(&item.id).unwrap().unwrap();
@@ -1203,7 +1217,7 @@ mod tests {
     }
 
     #[test]
-    fn foldered_non_starred_records_still_expire() {
+    fn foldered_records_survive_and_get_new_deadline_when_removed() {
         let temp =
             std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
         let db_path = temp.join("test.sqlite");
@@ -1215,14 +1229,52 @@ mod tests {
         db.move_to_folder(&item.id, Some(folder.id)).unwrap();
         db.conn
             .execute(
-                "UPDATE items SET expires_at = ?2 WHERE id = ?1",
-                params![item.id, now_ts() - 1],
+                "UPDATE items SET created_at = ?2, expires_at = ?3 WHERE id = ?1",
+                params![item.id, now_ts() - 31 * 24 * 60 * 60, now_ts() - 1],
             )
             .unwrap();
 
         db.cleanup_retention().unwrap();
-
+        assert!(db.get_item(&item.id).unwrap().is_some());
+        let removed = db.move_to_folder(&item.id, None).unwrap();
+        assert!(removed.expires_at.unwrap() > now_ts() + 29 * 24 * 60 * 60);
+        db.cleanup_retention().unwrap();
+        assert!(db.get_item(&item.id).unwrap().is_some());
+        db.conn.execute("UPDATE items SET expires_at = ?2 WHERE id = ?1", params![item.id, now_ts() - 1]).unwrap();
+        db.cleanup_retention().unwrap();
         assert!(db.get_item(&item.id).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn quick_ttl_only_removes_quick_entry_and_history_expiry_cascades() {
+        let temp = std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let mut db = Database::open(temp.join("test.sqlite"), temp.join("images")).unwrap();
+        let (item, _) = (0..5).map(|_| db.insert_text_item("temporary linked record").unwrap()).last().unwrap();
+        let suggestion = db.get_quick_suggestions().unwrap().pop().unwrap();
+        let quick = db.accept_quick_suggestion(&suggestion.id, 24 * 60 * 60).unwrap();
+        db.conn.execute("UPDATE quick_items SET expires_at = ?2 WHERE id = ?1", params![quick.id, now_ts() - 1]).unwrap();
+        assert!(db.get_quick_pool().unwrap().is_empty());
+        assert!(db.get_item(&item.id).unwrap().is_some());
+
+        let quick = db.insert_quick_item("temporary linked record", 5, 60 * 24 * 60 * 60, Some(&item.id)).unwrap();
+        db.conn.execute("UPDATE items SET expires_at = ?2 WHERE id = ?1", params![item.id, now_ts() - 1]).unwrap();
+        db.cleanup_retention().unwrap();
+        assert!(db.get_item(&item.id).unwrap().is_none());
+        assert!(db.get_quick_pool().unwrap().iter().all(|entry| entry.id != quick.id));
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn unstar_inside_folder_stays_protected() {
+        let temp = std::env::temp_dir().join(format!("smart-clipboard-test-{}", uuid::Uuid::new_v4()));
+        let mut db = Database::open(temp.join("test.sqlite"), temp.join("images")).unwrap();
+        let folder = db.create_folder("Saved").unwrap();
+        let (item, _) = db.insert_text_item("starred and foldered").unwrap();
+        db.move_to_folder(&item.id, Some(folder.id.clone())).unwrap();
+        db.toggle_star(&item.id, true).unwrap();
+        assert!(db.toggle_star(&item.id, false).unwrap().expires_at.is_none());
+        assert!(db.move_to_folder(&item.id, None).unwrap().expires_at.is_some());
         let _ = std::fs::remove_dir_all(temp);
     }
 

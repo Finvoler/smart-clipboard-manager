@@ -25,7 +25,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.3.2-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.3.3-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -58,7 +58,7 @@ API documentation: [Windows OcrEngine](https://learn.microsoft.com/en-us/uwp/api
 - `API key`: paste your provider key locally.
 - `Search / archive model`: model used by AI search and AI archive.
 - AI semantic search checks the full saved history in bounded requests; AI archive processes up to 300 recent uncategorized records per run. Large histories can require multiple paid model requests and take longer to finish. Ordinary local search does not call the model.
-- Ordinary history expires after 30 days, regardless of record count; copying the same item again refreshes its retention time. Starred records are exempt. Moving a non-starred record into a folder does not stop expiration.
+- Ordinary history expires after 30 days, regardless of record count; copying the same item again refreshes its retention time. Starred and foldered records are exempt. Removing a record from a folder or un-starring it starts a fresh 30-day period unless it remains protected by the other condition. Temporary-pool TTL only removes the temporary entry; if its source history record expires first, the temporary entry is removed with it.
 - `Image OCR`: runs locally on demand using installed Windows OCR language packs. Prefers Chinese (also reads Latin letters), then the user's Windows language, then another installed recognizer. No API key or bundled OCR engine is used.
 - `File save path`: optional custom directory for the local database, image cache, and later data files. Choose or type an **existing folder**, then click `Save path and restart` and confirm the destination. Invalid or nonexistent paths fail in the button without creating a folder or restarting. Unsaved edits are discarded when the panel is closed and reopened. `Current active data directory` only changes after a successful restart.
 
@@ -156,8 +156,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `SmartClipboard.exe`, this README, and the release notes.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.3.2`.
-5. Upload `SmartClipboard-v0.3.2-windows-x64.zip`.
+4. Tag version: `v0.3.3`.
+5. Upload `SmartClipboard-v0.3.3-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

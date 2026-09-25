@@ -67,7 +67,7 @@ fn paste_text_and_track(app: &AppHandle, state: &AppState, text: &str) -> Result
             .db
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
-        db.observe_text_for_quick_pool(&text)
+        db.observe_text_for_quick_pool(&text, None)
             .map_err(String::from)?
     };
     for quick_suggestion in quick_suggestions {
@@ -231,19 +231,21 @@ pub fn move_to_folder(
 
 #[tauri::command]
 pub fn get_quick_pool(state: State<'_, AppState>) -> Result<Vec<QuickItem>, String> {
-    let db = state
+    let mut db = state
         .db
         .lock()
         .map_err(|_| "database lock poisoned".to_string())?;
+    db.cleanup_retention().map_err(String::from)?;
     db.get_quick_pool().map_err(String::from)
 }
 
 #[tauri::command]
 pub fn get_quick_suggestions(state: State<'_, AppState>) -> Result<Vec<QuickSuggestion>, String> {
-    let db = state
+    let mut db = state
         .db
         .lock()
         .map_err(|_| "database lock poisoned".to_string())?;
+    db.cleanup_retention().map_err(String::from)?;
     db.get_quick_suggestions().map_err(String::from)
 }
 
