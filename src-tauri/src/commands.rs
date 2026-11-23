@@ -3,6 +3,7 @@
 //! 这里尽量只做参数编排、状态锁和错误转换，真正的数据读写在 db.rs，
 //! 真正的系统交互在 platform/*，真正的 AI 请求在 ai.rs。
 
+#[cfg(target_os = "windows")]
 use std::sync::atomic::Ordering;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -47,6 +48,7 @@ pub fn execute_paste(
         let image_path = item
             .image_path
             .ok_or_else(|| "image file is missing".to_string())?;
+        #[cfg(target_os = "windows")]
         state.ignore_next_clipboard.store(true, Ordering::SeqCst);
         platform::paste_image_and_hide(&app, &image_path, &state.last_foreground_window)?;
         return Ok(());
@@ -59,6 +61,7 @@ pub fn execute_paste(
 }
 
 fn paste_text_and_track(app: &AppHandle, state: &AppState, text: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
     state.ignore_next_clipboard.store(true, Ordering::SeqCst);
     platform::paste_text_and_hide(app, text, &state.last_foreground_window)?;
 
@@ -257,17 +260,32 @@ pub fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, Strin
         .map_err(|_| "settings lock poisoned".to_string())
         .map(|settings| settings.clone())?;
     settings.resolved_data_directory = crate::current_data_dir_string(&state)?;
+    #[cfg(target_os = "macos")]
+    {
+        settings.run_at_startup = platform::runs_at_startup();
+    }
     Ok(settings)
 }
 
 #[tauri::command]
 pub fn save_app_settings(
     mut settings: AppSettings,
+    update_startup: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AppSettings, String> {
     settings.app_enabled = true;
     settings.resolved_data_directory.clear();
+    #[cfg(target_os = "macos")]
+    {
+        if update_startup == Some(true) {
+            platform::set_run_at_startup(&app, settings.run_at_startup)?;
+        }
+        settings.run_at_startup = platform::runs_at_startup();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = update_startup;
+
     let saved = {
         let db = state
             .db
@@ -276,6 +294,7 @@ pub fn save_app_settings(
         db.save_app_settings(settings).map_err(String::from)?
     };
 
+    #[cfg(not(target_os = "macos"))]
     platform::set_run_at_startup(&app, saved.run_at_startup)?;
     platform::set_hide_console_window(saved.hide_console_window)?;
     sync_tray_menu(&app, saved.intercept_win_v)?;

@@ -39,6 +39,7 @@ pub struct AppState {
     pub db: Arc<Mutex<Database>>,
     pub settings: Arc<Mutex<AppSettings>>,
     pub current_data_dir: Arc<Mutex<PathBuf>>,
+    #[cfg(target_os = "windows")]
     pub ignore_next_clipboard: Arc<AtomicBool>,
     pub last_foreground_window: Arc<Mutex<Option<isize>>>,
 }
@@ -90,6 +91,9 @@ pub fn run() {
         }
     }));
 
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+
     builder
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -136,6 +140,8 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             // setup 是后端真正的装配点：数据库、设置缓存、系统集成都在这里建立。
             let app_handle = app.handle().clone();
             let config_path = bootstrap_config_path(&app_handle)?;
@@ -158,6 +164,7 @@ pub fn run() {
                 settings = database.save_app_settings(settings)?;
                 settings.resolved_data_directory = data_dir.to_string_lossy().to_string();
             }
+            #[cfg(not(target_os = "macos"))]
             let run_at_startup = settings.run_at_startup;
             let hide_console_window = settings.hide_console_window;
 
@@ -165,6 +172,7 @@ pub fn run() {
                 db: Arc::new(Mutex::new(database)),
                 settings: Arc::new(Mutex::new(settings)),
                 current_data_dir: Arc::new(Mutex::new(data_dir)),
+                #[cfg(target_os = "windows")]
                 ignore_next_clipboard: Arc::new(AtomicBool::new(false)),
                 last_foreground_window: Arc::new(Mutex::new(None)),
             };
@@ -172,8 +180,11 @@ pub fn run() {
             let integrations_state = state.clone();
             app.manage(state);
             platform::start_system_integrations(app.handle().clone(), &integrations_state);
+            #[cfg(not(target_os = "macos"))]
             platform::set_run_at_startup(app.handle(), run_at_startup)?;
             platform::set_hide_console_window(hide_console_window)?;
+            #[cfg(target_os = "macos")]
+            platform::register_clipboard_shortcut(app.handle());
             setup_tray(app.handle())?;
             sync_initial_window_visibility(app.handle());
             Ok(())
@@ -181,6 +192,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build Smart Clipboard")
         .run(|_app, event| match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                if let Some(state) = _app.try_state::<AppState>() {
+                    let _ = platform::show_main_window(_app, &state.last_foreground_window);
+                }
+            }
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 APP_EXITING.store(true, Ordering::SeqCst);
             }
@@ -413,13 +433,18 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 fn build_tray_menu(
     app: &tauri::AppHandle,
-    intercept_win_v: bool,
+    _intercept_win_v: bool,
 ) -> tauri::Result<Menu<tauri::Wry>> {
-    let show = MenuItem::with_id(app, "show", "Show Smart Clipboard", true, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    let show_title = platform::show_menu_title(app);
+    #[cfg(not(target_os = "macos"))]
+    let show_title = "Show Smart Clipboard";
+    let show = MenuItem::with_id(app, "show", show_title, true, None::<&str>)?;
+    #[cfg(target_os = "windows")]
     let native = MenuItem::with_id(
         app,
         "toggle_win_v",
-        win_v_tray_label(intercept_win_v),
+        win_v_tray_label(_intercept_win_v),
         true,
         None::<&str>,
     )?;
@@ -431,7 +456,11 @@ fn build_tray_menu(
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    Menu::with_items(app, &[&show, &native, &restart, &quit])
+    let menu = Menu::with_items(app, &[&show])?;
+    #[cfg(target_os = "windows")]
+    menu.append(&native)?;
+    menu.append_items(&[&restart, &quit])?;
+    Ok(menu)
 }
 
 fn current_intercept_win_v(app: &tauri::AppHandle) -> bool {
@@ -455,6 +484,7 @@ pub(crate) fn sync_tray_menu(app: &tauri::AppHandle, intercept_win_v: bool) -> R
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn win_v_tray_label(intercept_win_v: bool) -> &'static str {
     if intercept_win_v {
         "Use Native Win+V"
@@ -717,7 +747,10 @@ where
             .map_err(|_| "database lock poisoned".to_string())?;
         db.save_app_settings(settings).map_err(String::from)?
     };
+    #[cfg(not(target_os = "macos"))]
     platform::set_run_at_startup(app, saved.run_at_startup)?;
+    #[cfg(target_os = "macos")]
+    let _ = app;
     platform::set_hide_console_window(saved.hide_console_window)?;
     if let Ok(mut cached) = state.settings.lock() {
         *cached = saved.clone();

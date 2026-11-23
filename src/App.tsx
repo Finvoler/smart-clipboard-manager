@@ -17,6 +17,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { call, fileSrc, onNewItem, onPanelShown, onQuickSuggestionDetected, type AppSettings, type ClipboardItem, type DataDirectoryChangeResult, type Folder, type QuickItem, type QuickSuggestion } from './tauriClient';
 
 const DEFAULT_LIMIT = 0;
+const isMac = /Macintosh/.test(navigator.userAgent);
 const remarkPlugins = [remarkGfm, remarkMath];
 const rehypePlugins = [rehypeKatex, rehypeHighlight];
 const RecordMarkdown = memo(function RecordMarkdown({ text }: { text: string }) {
@@ -115,6 +116,7 @@ const COPY = {
     language: '语言',
     captureClipboard: '记录剪贴板历史',
     startWithWindows: '开机启动',
+    startOnLogin: '登录时启动',
     hideConsoleWindow: '隐藏控制台窗口',
     protocol: '协议',
     openaiCompatible: 'OpenAI 兼容',
@@ -128,6 +130,7 @@ const COPY = {
     hideModelOptions: '收起模型候选',
     localOcr: '图片 OCR',
     localOcrDescription: 'Windows 本地 OCR，无需 API Key；请安装所需语言的系统 OCR 语言包',
+    macOcrDescription: '使用 macOS Vision 在本机识别中英文，无需 API Key',
     test: '测试',
     models: '模型',
     imageDimensions: (width?: number | null, height?: number | null) => `${width ?? '?'} x ${height ?? '?'}`,
@@ -213,6 +216,7 @@ const COPY = {
     language: 'Language',
     captureClipboard: 'Record clipboard history',
     startWithWindows: 'Start with Windows',
+    startOnLogin: 'Launch at login',
     hideConsoleWindow: 'Hide console window',
     protocol: 'Protocol',
     openaiCompatible: 'OpenAI compatible',
@@ -226,6 +230,7 @@ const COPY = {
     hideModelOptions: 'Collapse model options',
     localOcr: 'Image OCR',
     localOcrDescription: 'Windows local OCR, no API key. Requires an installed Windows OCR language pack.',
+    macOcrDescription: 'Recognize Chinese and English on-device with macOS Vision. No API key required.',
     test: 'Test',
     models: 'Models',
     imageDimensions: (width?: number | null, height?: number | null) => `${width ?? '?'} x ${height ?? '?'}`,
@@ -614,6 +619,7 @@ export function App() {
       try {
         const saved = await call<AppSettings>('save_app_settings', {
           settings: { ...(savedSettings ?? settings), [key]: value, appEnabled: true },
+          updateStartup: key === 'runAtStartup',
         });
         setSavedSettings(saved);
         setSettings((current) => current ? { ...current, [key]: saved[key] } : saved);
@@ -1344,12 +1350,14 @@ function SettingsFields({ settings, feedback, pendingKeys, modelOptions, copy, b
 
       <label className="toggleRow">
         <input type="checkbox" checked={settings.runAtStartup} disabled={busy} onChange={(event) => onToggle('runAtStartup', event.target.checked)} />
-        <span>{copy.startWithWindows}</span>
+        <span>{isMac ? copy.startOnLogin : copy.startWithWindows}</span>
       </label>
-      <label className="toggleRow">
-        <input type="checkbox" checked={settings.hideConsoleWindow} disabled={busy} onChange={(event) => onToggle('hideConsoleWindow', event.target.checked)} />
-        <span>{copy.hideConsoleWindow}</span>
-      </label>
+      {!isMac && (
+        <label className="toggleRow">
+          <input type="checkbox" checked={settings.hideConsoleWindow} disabled={busy} onChange={(event) => onToggle('hideConsoleWindow', event.target.checked)} />
+          <span>{copy.hideConsoleWindow}</span>
+        </label>
+      )}
 
       <div className="fieldLabel">
         {copy.language}
@@ -1382,7 +1390,7 @@ function SettingsFields({ settings, feedback, pendingKeys, modelOptions, copy, b
       </div>
       <div className="fieldLabel">
         {copy.localOcr}
-        <span>{copy.localOcrDescription}</span>
+        <span>{isMac ? copy.macOcrDescription : copy.localOcrDescription}</span>
       </div>
       <div className="settingsActions">
         <FeedbackButton actionKey="settings:save" feedback={feedback} pending={pendingKeys.has('settings:save')} disabled={busy} label={copy.save} workingLabel={copy.actionWorking} icon={<Save size={14} />} onClick={onSave} />

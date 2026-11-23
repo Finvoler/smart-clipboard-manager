@@ -1,8 +1,14 @@
 # Smart Clipboard
 
-Windows intelligent clipboard manager built with Tauri, React, TypeScript, Rust, and SQLite.
+Windows and macOS clipboard manager built with Tauri, React, TypeScript, Rust, and SQLite.
 
 Learning-oriented repo notes live in `docs/project-retrospective-and-structure.md`.
+
+## macOS 快捷键与安装
+
+正式版默认按 **Ctrl+V** 打开剪贴板历史，按 **⌘C / ⌘V** 正常复制和粘贴。个人适配版使用 **⌘V** 打开历史、**Ctrl+C / Ctrl+V** 复制和粘贴。Windows 版使用 **Win+V** 打开历史。
+
+在 macOS 13 或更新版本的 Apple 芯片 Mac 上，解压 macOS arm64 压缩包，将 Smart Clipboard 拖入「应用程序」并打开。在原窗口按 Ctrl+V 后点击历史条目即可回填；自动粘贴需要在「系统设置 → 隐私与安全性 → 辅助功能」中允许 Smart Clipboard。
 
 ## Features
 
@@ -25,7 +31,7 @@ Learning-oriented repo notes live in `docs/project-retrospective-and-structure.m
 
 ## Install And Run
 
-1. Download `SmartClipboard-v0.3.3-windows-x64.zip` from GitHub Releases.
+1. Download `SmartClipboard-v0.3.4-windows-x64.zip` from GitHub Releases.
 2. Extract the zip to a stable folder, for example `H:\Clipboard` or `D:\Apps\SmartClipboard`.
 3. Run `SmartClipboard.exe`.
 4. Open the tray icon and choose `Show Smart Clipboard`.
@@ -156,8 +162,8 @@ git push -u origin main
 1. Build the release exe with `npm run tauri -- build`.
 2. Create a zip containing `SmartClipboard.exe`, this README, and the release notes.
 3. On GitHub, open the repository, go to `Releases`, choose `Draft a new release`.
-4. Tag version: `v0.3.3`.
-5. Upload `SmartClipboard-v0.3.3-windows-x64.zip`.
+4. Tag version: `v0.3.4`.
+5. Upload `SmartClipboard-v0.3.4-windows-x64.zip`.
 6. Paste the feature list and install notes into the release description.
 
 Avoid uploading these folders or files:

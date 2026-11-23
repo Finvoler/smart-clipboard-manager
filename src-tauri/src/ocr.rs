@@ -1,5 +1,5 @@
-//! On-demand OCR using the language packs installed with Windows.
-//! The synchronous WinRT calls run on Tauri's blocking thread pool.
+//! On-device OCR using the operating system’s text recognition APIs.
+//! Recognition runs on Tauri’s blocking thread pool.
 
 use std::path::Path;
 
@@ -150,15 +150,68 @@ fn join_spaced_chinese(text: &str) -> String {
     output
 }
 
-#[cfg(not(windows))]
-pub fn recognize_image(_path: &Path) -> Result<String, String> {
-    Err("Local OCR requires Windows".to_string())
+#[cfg(target_os = "macos")]
+pub fn recognize_image(path: &Path) -> Result<String, String> {
+    use objc2::{rc::autoreleasepool, AnyThread};
+    use objc2_foundation::{NSArray, NSDictionary, NSString, NSURL};
+    use objc2_vision::{
+        VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
+    };
+
+    let path = path.to_str().ok_or("Invalid image path")?;
+    autoreleasepool(|_| {
+        let request = VNRecognizeTextRequest::new();
+        request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+        // Automatic detection can override the configured languages on mixed-script images.
+        request.setAutomaticallyDetectsLanguage(false);
+        // Query this request revision before setting Chinese and English candidates.
+        let supported = unsafe { request.supportedRecognitionLanguagesAndReturnError() }
+            .map_err(|error| error.localizedDescription().to_string())?;
+        let languages: Vec<_> = ["zh-Hans", "zh-Hant", "en-US"]
+            .into_iter()
+            .map(NSString::from_str)
+            .filter(|language| supported.containsObject(language))
+            .collect();
+        if !languages.is_empty() {
+            request.setRecognitionLanguages(&NSArray::from_retained_slice(&languages));
+        }
+
+        let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path), false);
+        // An empty options dictionary has no values with mismatched Objective-C types.
+        let handler = unsafe {
+            VNImageRequestHandler::initWithURL_options(
+                VNImageRequestHandler::alloc(),
+                &url,
+                &NSDictionary::new(),
+            )
+        };
+        let native_request: &VNRequest = &request;
+        handler
+            .performRequests_error(&NSArray::from_slice(&[native_request]))
+            .map_err(|error| error.localizedDescription().to_string())?;
+
+        let lines: Vec<_> = request.results().into_iter()
+            .flat_map(|results| results.to_vec())
+            .filter_map(|observation| observation.topCandidates(1).firstObject())
+            .map(|text| text.string().to_string())
+            .collect();
+        if lines.is_empty() {
+            return Err("未在图片中识别到文字。No readable text found in the image.".to_string());
+        }
+        Ok(lines.join("\n"))
+    })
 }
 
-#[cfg(all(test, windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn recognize_image(_path: &Path) -> Result<String, String> {
+    Err("Local OCR requires macOS or Windows".to_string())
+}
+
+#[cfg(all(test, any(windows, target_os = "macos")))]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn bounds_large_images_without_upscaling() {
         assert_eq!(bounded_dimensions(1100, 200, 10000), (1100, 200));
@@ -167,15 +220,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the Windows Simplified Chinese OCR language pack"]
+    #[cfg_attr(windows, ignore = "requires the Windows Simplified Chinese OCR language pack")]
     fn recognizes_chinese_and_english_without_api_key() {
         let image = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr-smoke.png");
-        let text = recognize_image(&image).expect("Windows OCR should recognize the fixture");
+        let text = recognize_image(&image).expect("Native OCR should recognize the fixture");
         let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(compact.contains("剪贴板OCR测试123ABC"), "unexpected OCR text: {text}");
         assert!(text.lines().count() >= 2, "OCR must preserve line breaks");
     }
 
+    #[cfg(windows)]
     #[test]
     fn joins_spaced_chinese_without_changing_word_spaces() {
         assert_eq!(join_spaced_chinese("剪 贴 板 OCR 测 试 123 ABC"), "剪贴板 OCR 测试 123 ABC");

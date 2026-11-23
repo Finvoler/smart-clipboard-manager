@@ -58,7 +58,7 @@ use windows::{
 };
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
-use crate::{models::ClipboardItem, AppState};
+use crate::AppState;
 
 const WINDOW_WIDTH: f64 = 960.0;
 const WINDOW_HEIGHT: f64 = 640.0;
@@ -438,41 +438,7 @@ fn capture_clipboard() {
         return;
     }
 
-    let Ok(mut clipboard) = arboard::Clipboard::new() else {
-        return;
-    };
-
-    if let Ok(text) = clipboard.get_text() {
-        if text.trim().is_empty() {
-            return;
-        }
-        if let Ok(mut db) = runtime.db.lock() {
-            if let Ok((item, quick_suggestions)) = db.insert_text_item(&text) {
-                emit_new_item(&runtime.app, item);
-                for quick_suggestion in quick_suggestions {
-                    let _ = runtime
-                        .app
-                        .emit("on_quick_suggestion_detected", quick_suggestion);
-                }
-            }
-        }
-        return;
-    }
-
-    if let Ok(image) = clipboard.get_image() {
-        if let Ok(mut db) = runtime.db.lock() {
-            if let Ok(item) = db.insert_image_item(image.width, image.height, image.bytes.as_ref())
-            {
-                emit_new_item(&runtime.app, item);
-            }
-        }
-    }
-}
-
-fn emit_new_item(app: &AppHandle, mut item: ClipboardItem) {
-    // Match get_history_light: large text is fetched only for editing/expanding.
-    item.content = None;
-    let _ = app.emit("on_new_item", item);
+    super::capture::record_clipboard(&runtime.app, &runtime.db);
 }
 
 fn start_keyboard_hook() {

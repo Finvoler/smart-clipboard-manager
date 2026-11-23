@@ -1,0 +1,65 @@
+name: Publish Smart Clipboard
+on:
+  push:
+    branches: [master]
+    paths: ['release/RELEASE_NOTES_v*.md']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run verify
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - if: runner.os == 'macOS'
+        run: |
+          set -eu
+          test "$(uname -m)" = arm64
+          npm run tauri -- build --bundles app
+          version=$(node -p "require('./package.json').version")
+          mkdir upload
+          app="src-tauri/target/release/bundle/macos/Smart Clipboard.app"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          ditto -c -k --keepParent "$app" "upload/SmartClipboard-v${version}-macos-arm64.zip"
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npm run tauri -- build --no-bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          mkdir upload
+          Copy-Item src-tauri/target/release/smart_clipboard.exe upload/SmartClipboard.exe
+          Compress-Archive -Path upload/SmartClipboard.exe,README.md,"release/RELEASE_NOTES_v$version.md" -DestinationPath "upload/SmartClipboard-v$version-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ runner.os }}
+          path: upload/*
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: upload
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag=v$(node -p "require('./package.json').version")
+          (cd upload && sha256sum *.zip *.exe > SHA256SUMS.txt)
+          gh release create "$tag" upload/* --target "$GITHUB_SHA" --title "Smart Clipboard $tag" --notes-file "release/RELEASE_NOTES_${tag}.md"
